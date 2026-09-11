@@ -45,7 +45,11 @@ class LLMProvider(LLMProviderBase):
         model_key_msg = check_model_key("LLM", self.api_key)
         if model_key_msg:
             logger.bind(tag=TAG).error(model_key_msg)
-        self.client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=httpx.Timeout(self.timeout))
+        self.client = openai.OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=httpx.Timeout(self.timeout),
+        )
 
     @staticmethod
     def normalize_dialogue(dialogue):
@@ -70,7 +74,9 @@ class LLMProvider(LLMProviderBase):
                 "max_tokens": kwargs.get("max_tokens", self.max_tokens),
                 "temperature": kwargs.get("temperature", self.temperature),
                 "top_p": kwargs.get("top_p", self.top_p),
-                "frequency_penalty": kwargs.get("frequency_penalty", self.frequency_penalty),
+                "frequency_penalty": kwargs.get(
+                    "frequency_penalty", self.frequency_penalty
+                ),
             }
 
             for key, value in optional_params.items():
@@ -82,7 +88,11 @@ class LLMProvider(LLMProviderBase):
             is_active = True
             for chunk in responses:
                 try:
-                    delta = chunk.choices[0].delta if getattr(chunk, "choices", None) else None
+                    delta = (
+                        chunk.choices[0].delta
+                        if getattr(chunk, "choices", None)
+                        else None
+                    )
                     content = getattr(delta, "content", "") if delta else ""
                 except IndexError:
                     content = ""
@@ -102,7 +112,8 @@ class LLMProvider(LLMProviderBase):
     def response_with_functions(self, session_id, dialogue, functions=None, **kwargs):
         try:
             dialogue = self.normalize_dialogue(dialogue)
-
+            logger.bind(tag=TAG).info("111")
+            logger.bind(tag=TAG).info(dialogue)
             request_params = {
                 "model": self.model_name,
                 "messages": dialogue,
@@ -114,13 +125,15 @@ class LLMProvider(LLMProviderBase):
                 "max_tokens": kwargs.get("max_tokens", self.max_tokens),
                 "temperature": kwargs.get("temperature", self.temperature),
                 "top_p": kwargs.get("top_p", self.top_p),
-                "frequency_penalty": kwargs.get("frequency_penalty", self.frequency_penalty),
+                "frequency_penalty": kwargs.get(
+                    "frequency_penalty", self.frequency_penalty
+                ),
             }
 
             for key, value in optional_params.items():
                 if value is not None:
                     request_params[key] = value
-
+            logger.bind(tag=TAG).info(request_params)
             stream = self.client.chat.completions.create(**request_params)
 
             for chunk in stream:

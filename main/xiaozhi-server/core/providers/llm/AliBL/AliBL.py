@@ -17,7 +17,9 @@ class LLMProvider(LLMProviderBase):
         self.base_url = config.get("base_url")
         self.is_No_prompt = config.get("is_no_prompt")
         self.memory_id = config.get("ali_memory_id")
-        self.streaming_chunk_size = config.get("streaming_chunk_size", 3)  # 每次流式返回的字符数
+        self.streaming_chunk_size = config.get(
+            "streaming_chunk_size", 3
+        )  # 每次流式返回的字符数
         check_model_key("AliBLLLM", self.api_key)
 
     def response(self, session_id, dialogue):
@@ -46,7 +48,7 @@ class LLMProvider(LLMProviderBase):
                 logger.bind(tag=TAG).debug(
                     f"【阿里百练API服务】处理后的prompt: {prompt}"
                 )
-
+            logger.info(f"【阿里百练API服务】发送请求111")
             # 可选地设置自定义API基地址（若配置为兼容模式URL则忽略）
             if self.base_url and ("/api/" in self.base_url):
                 dashscope.base_http_api_url = self.base_url
@@ -71,7 +73,7 @@ class LLMProvider(LLMProviderBase):
                         continue
                     # SDK流式为增量覆盖，计算差量输出
                     if len(current_text) >= len(last_text):
-                        delta = current_text[len(last_text):]
+                        delta = current_text[len(last_text) :]
                     else:
                         # 避免偶发回退
                         delta = current_text
@@ -91,7 +93,7 @@ class LLMProvider(LLMProviderBase):
                         f"【阿里百练API服务】完整响应长度: {len(full_text)}"
                     )
                     for i in range(0, len(full_text), self.streaming_chunk_size):
-                        chunk = full_text[i:i + self.streaming_chunk_size]
+                        chunk = full_text[i : i + self.streaming_chunk_size]
                         if chunk:
                             yield chunk
 

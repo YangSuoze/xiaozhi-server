@@ -30,11 +30,14 @@ server:
   # 认证配置
   auth:
     # 是否启用认证
-    enabled: false
-    # 白名单设备ID列表
-    # 如果属于白名单内的设备，不校验token，直接放行
+    enabled: true
+    # 允许获取连接令牌的设备 ID。生产环境请在 data/.config.yaml 中
+    # 替换为真实设备；白名单设备仍然必须携带服务端签发的 token。
     allowed_devices:
       - "11:22:33:44:55:66"
+    # 每台设备的预置密钥。只写在 data/.config.yaml，并通过 HTTPS/WSS 传输。
+    device_secrets:
+      "11:22:33:44:55:66": "请替换为随机生成的设备密钥"
  # MQTT网关配置，用于通过OTA下发到设备，根据mqtt_gateway的.env文件配置，格式为host:port
   mqtt_gateway: null
   # MQTT签名密钥，用于生成MQTT连接密码，根据mqtt_gateway的.env文件配置
@@ -153,12 +156,17 @@ plugins:
     base_url: http://homeassistant.local:8123
     api_key: 你的home assistant api访问令牌
   play_music:
-    music_dir: "./music"  # 音乐文件存放路径，将从该目录及子目录下搜索音乐文件
-    music_ext: # 音乐文件类型，p3格式效率最高
-      - ".mp3"
-      - ".wav"
-      - ".p3"
-    refresh_time: 300 # 刷新音乐列表的时间间隔，单位为秒
+    # 在线音乐使用独立的短期缓存，不再写入项目的 music 目录
+    cache_dir: "./data/music_cache"
+    cache_max_size_mb: 256
+    cache_max_files: 30
+    cache_ttl_hours: 24
+    cache_max_file_size_mb: 50
+    # 文件入队后保留一小时，避免播放线程读取期间被清理
+    cache_protect_seconds: 3600
+    cache_cleanup_interval_seconds: 300
+    download_timeout_seconds: 45
+    llm_timeout_seconds: 10
   search_from_ragflow:
     # 知识库的描述信息，方便大语言模型知道什么时候调用
     description: "当用户问xxx时，调用本方法，使用知识库中的信息回答问题"
@@ -239,6 +247,10 @@ Intent:
   intent_llm:
     # 不需要动type
     type: intent_llm
+    # 意图模型在独立线程中执行，避免阻塞实时音频事件循环
+    timeout_seconds: 15
+    max_concurrent_requests: 2
+    history_count: 10
     # 配备意图识别独立的思考模型
     # 如果这里不填，则会默认使用selected_module.LLM的模型作为意图识别的思考模型
     # 如果你的不想使用selected_module.LLM意图识别，这里最好使用独立的LLM作为意图识别，例如使用免费的ChatGLMLLM

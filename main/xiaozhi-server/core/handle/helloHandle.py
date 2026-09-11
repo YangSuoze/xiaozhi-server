@@ -13,6 +13,14 @@ from core.providers.tools.device_mcp import (
     send_mcp_initialize_message,
     send_mcp_tools_list_request,
 )
+# 在文件开头导入
+from plugins_func.functions.alarm_clock import alarm_manager
+
+# 在Hello处理函数中添加启动代码
+def start_alarm_manager_if_needed(loop):
+    """如果需要，启动闹铃管理器"""
+    if not alarm_manager.running:
+        alarm_manager.start(loop)
 
 TAG = __name__
 

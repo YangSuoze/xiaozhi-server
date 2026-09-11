@@ -10,7 +10,10 @@ from core.http_server import SimpleHttpServer
 from core.websocket_server import WebSocketServer
 from core.utils.util import check_ffmpeg_installed
 from core.utils.gc_manager import get_gc_manager
-
+try:
+    from plugins_func.functions.alarm_clock import alarm_manager
+except ImportError:
+    alarm_manager = None
 TAG = __name__
 logger = setup_logging()
 
@@ -71,6 +74,14 @@ async def main():
     # 启动 WebSocket 服务器
     ws_server = WebSocketServer(config)
     ws_task = asyncio.create_task(ws_server.start())
+    # 【新增】启动闹铃管理器 (如果存在)
+    # 我们需要获取一个 loop，可以使用 asyncio.get_running_loop()
+    logger.bind(tag=TAG).info(f"alarm_manager:{alarm_manager}")
+
+    if alarm_manager:
+        loop = asyncio.get_running_loop()
+        alarm_manager.start(loop)
+        logger.bind(tag=TAG).info("全局闹铃管理器已启动")
     # 启动 Simple http 服务器
     ota_server = SimpleHttpServer(config)
     ota_task = asyncio.create_task(ota_server.start())
@@ -127,6 +138,9 @@ async def main():
     except asyncio.CancelledError:
         print("任务被取消，清理资源中...")
     finally:
+        if alarm_manager:
+            await alarm_manager.stop()
+
         # 停止全局GC管理器
         await gc_manager.stop()
 

@@ -1,11 +1,12 @@
 from typing import List, Dict
 from ..base import IntentProviderBase
-from plugins_func.functions.play_music import initialize_music_handler
 from config.logger import setup_logging
+import asyncio
 import re
 import json
 import hashlib
 import time
+import datetime
 
 TAG = __name__
 logger = setup_logging()
@@ -15,13 +16,17 @@ class IntentProvider(IntentProviderBase):
     def __init__(self, config):
         super().__init__(config)
         self.llm = None
-        self.promot = ""
+        self._prompt_cache = {}
+        self._llm_semaphore = asyncio.Semaphore(
+            max(1, int(config.get("max_concurrent_requests", 2)))
+        )
         # 导入全局缓存管理器
         from core.utils.cache.manager import cache_manager, CacheType
 
         self.cache_manager = cache_manager
         self.CacheType = CacheType
-        self.history_count = 4  # 默认使用最近4条对话记录
+        self.history_count = int(config.get("history_count", 10))
+        self.timeout_seconds = float(config.get("timeout_seconds", 15))
 
     def get_intent_system_prompt(self, functions_list: str) -> str:
         """
@@ -35,10 +40,12 @@ class IntentProvider(IntentProviderBase):
         # 构建函数说明部分
         functions_desc = "可用的函数列表：\n"
         for func in functions_list:
+
             func_info = func.get("function", {})
             name = func_info.get("name", "")
             desc = func_info.get("description", "")
             params = func_info.get("parameters", {})
+            examples = func_info.get("examples", [])
 
             functions_desc += f"\n函数名: {name}\n"
             functions_desc += f"描述: {desc}\n"
@@ -50,8 +57,17 @@ class IntentProvider(IntentProviderBase):
                     param_type = param_info.get("type", "")
                     functions_desc += f"- {param_name} ({param_type}): {param_desc}\n"
 
+            if examples:
+                for ex in examples:
+                    functions_desc += "用户:" + ex.get("user_query", "") + "\n"
+                    functions_desc += (
+                        "返回:"
+                        + str(
+                            {"function_call": {"name": name, "arguments": ex["answer"]}}
+                        )
+                        + "\n"
+                    )
             functions_desc += "---\n"
-
         prompt = (
             "【严格格式要求】你必须只能返回JSON格式，绝对不能返回任何自然语言！\n\n"
             "你是一个意图识别助手。请分析用户的最后一句话，判断用户意图并调用相应的函数。\n\n"
@@ -59,7 +75,8 @@ class IntentProvider(IntentProviderBase):
             "- 询问当前时间（如：现在几点、当前时间、查询时间等）\n"
             "- 询问今天日期（如：今天几号、今天星期几、今天是什么日期等）\n"
             "- 询问今天农历（如：今天农历几号、今天什么节气等）\n"
-            "- 询问所在城市（如：我现在在哪里、你知道我在哪个城市吗等）"
+            "- 询问所在城市（如：我现在在哪里、你知道我在哪个城市吗等）\n"
+            "- 播放歌曲（如：播放一首歌、换一首歌、播放抖音热门歌曲等）\n"
             "系统会根据上下文信息直接构建回答。\n\n"
             "- 如果用户使用疑问词（如'怎么'、'为什么'、'如何'）询问退出相关的问题（例如'怎么退出了？'），注意这不是让你退出，请返回 {'function_call': {'name': 'continue_chat'}\n"
             "- 仅当用户明确使用'退出系统'、'结束对话'、'我不想和你说话了'等指令时，才触发 handle_exit_intent\n\n"
@@ -99,7 +116,7 @@ class IntentProvider(IntentProviderBase):
             "```\n"
             "用户: 你好啊\n"
             '返回: {"function_call": {"name": "continue_chat"}}\n'
-            "```\n\n"
+            "```\n"
             "注意：\n"
             "1. 只返回JSON格式，不要包含任何其他文字\n"
             '2. 优先检查用户查询是否为基础信息（时间、日期等），如是则返回{"function_call": {"name": "result_for_context"}}，不需要arguments参数\n'
@@ -135,56 +152,68 @@ class IntentProvider(IntentProviderBase):
         model_info = getattr(self.llm, "model_name", str(self.llm.__class__.__name__))
         logger.bind(tag=TAG).debug(f"使用意图识别模型: {model_info}")
 
-        # 计算缓存键
-        cache_key = hashlib.md5((conn.device_id + text).encode()).hexdigest()
+        functions = list(conn.func_handler.get_functions() or [])
+        if hasattr(conn, "mcp_client"):
+            mcp_tools = conn.mcp_client.get_available_tools()
+            if mcp_tools:
+                functions.extend(mcp_tools)
 
-        # 检查缓存
-        cached_intent = self.cache_manager.get(self.CacheType.INTENT, cache_key)
-        if cached_intent is not None:
-            cache_time = time.time() - total_start_time
-            logger.bind(tag=TAG).debug(
-                f"使用缓存的意图: {cache_key} -> {cached_intent}, 耗时: {cache_time:.4f}秒"
-            )
-            return cached_intent
+        functions_json = json.dumps(
+            functions, ensure_ascii=False, sort_keys=True, default=str
+        )
+        prompt_key = hashlib.sha256(functions_json.encode("utf-8")).hexdigest()
+        static_prompt = self._prompt_cache.get(prompt_key)
+        if static_prompt is None:
+            static_prompt = self.get_intent_system_prompt(functions)
+            if len(self._prompt_cache) >= 16:
+                self._prompt_cache.clear()
+            self._prompt_cache[prompt_key] = static_prompt
 
-        if self.promot == "":
-            functions = conn.func_handler.get_functions()
-            if hasattr(conn, "mcp_client"):
-                mcp_tools = conn.mcp_client.get_available_tools()
-                if mcp_tools is not None and len(mcp_tools) > 0:
-                    if functions is None:
-                        functions = []
-                    functions.extend(mcp_tools)
-
-            self.promot = self.get_intent_system_prompt(functions)
-
-        music_config = initialize_music_handler(conn)
-        music_file_names = music_config["music_file_names"]
-        prompt_music = f"{self.promot}\n<musicNames>{music_file_names}\n</musicNames>"
-
-        home_assistant_cfg = conn.config["plugins"].get("home_assistant")
-        if home_assistant_cfg:
-            devices = home_assistant_cfg.get("devices", [])
-        else:
-            devices = []
-        if len(devices) > 0:
-            hass_prompt = "\n下面是我家智能设备列表（位置，设备名，entity_id），可以通过homeassistant控制\n"
-            for device in devices:
-                hass_prompt += device + "\n"
-            prompt_music += hass_prompt
-
-        logger.bind(tag=TAG).debug(f"User prompt: {prompt_music}")
+        now = datetime.datetime.now().astimezone()
+        prompt_music = (
+            f"当前时间：{now.isoformat(timespec='seconds')}\n"
+            f"当前时区：{now.tzname() or now.strftime('%z')}\n"
+            f"{static_prompt}\n"
+        )
 
         # 构建用户对话历史的提示
-        msgStr = ""
+        history_lines = []
 
         # 获取最近的对话历史
         start_idx = max(0, len(dialogue_history) - self.history_count)
         for i in range(start_idx, len(dialogue_history)):
-            msgStr += f"{dialogue_history[i].role}: {dialogue_history[i].content}\n"
+            message = dialogue_history[i]
+            if isinstance(message, dict):
+                role = message.get("role", "")
+                content = message.get("content", "")
+            else:
+                role = getattr(message, "role", "")
+                content = getattr(message, "content", "")
+            history_lines.append(f"{role}: {content}")
 
-        msgStr += f"User: {text}\n"
-        user_prompt = f"current dialogue:\n{msgStr}"
+        history_lines.append(f"User: {text}")
+        user_prompt = "current dialogue:\n" + "\n".join(history_lines) + "\n"
+
+        # 意图依赖对话、工具列表和当前时间。把这些都纳入缓存键，避免把
+        # 另一个上下文中的动作参数复用到本次请求。
+        cache_payload = {
+            "device_id": getattr(conn, "device_id", "") or "",
+            "text": text,
+            "history": history_lines,
+            "tools": prompt_key,
+            "local_minute": now.strftime("%Y-%m-%d %H:%M %z"),
+        }
+        cache_key = hashlib.sha256(
+            json.dumps(
+                cache_payload, ensure_ascii=False, sort_keys=True
+            ).encode("utf-8")
+        ).hexdigest()
+        cached_intent = self.cache_manager.get(self.CacheType.INTENT, cache_key)
+        if cached_intent is not None:
+            logger.bind(tag=TAG).debug(
+                f"使用当前上下文的意图缓存: {cache_key[:12]}"
+            )
+            return cached_intent
 
         # 记录预处理完成时间
         preprocess_time = time.time() - total_start_time
@@ -193,14 +222,25 @@ class IntentProvider(IntentProviderBase):
         # 使用LLM进行意图识别
         llm_start_time = time.time()
         logger.bind(tag=TAG).debug(f"开始LLM意图识别调用, 模型: {model_info}")
-
-        intent = self.llm.response_no_stream(
-            system_prompt=prompt_music, user_prompt=user_prompt
-        )
+        try:
+            async with self._llm_semaphore:
+                intent = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.llm.response_no_stream,
+                        system_prompt=prompt_music,
+                        user_prompt=user_prompt,
+                    ),
+                    timeout=self.timeout_seconds,
+                )
+        except asyncio.TimeoutError:
+            logger.bind(tag=TAG).warning(
+                f"意图识别超时（{self.timeout_seconds:.1f}秒），转入普通对话"
+            )
+            return '{"function_call": {"name": "continue_chat"}}'
 
         # 记录LLM调用完成时间
         llm_time = time.time() - llm_start_time
-        logger.bind(tag=TAG).debug(
+        logger.bind(tag=TAG).info(
             f"外挂的大模型意图识别完成, 模型: {model_info}, 调用耗时: {llm_time:.4f}秒"
         )
 
@@ -223,6 +263,7 @@ class IntentProvider(IntentProviderBase):
         # 尝试解析为JSON
         try:
             intent_data = json.loads(intent)
+            logger.bind(tag=TAG).debug(f"解析后的意图JSON: {intent_data}")
             # 如果包含function_call，则格式化为适合处理的格式
             if "function_call" in intent_data:
                 function_data = intent_data["function_call"]
@@ -230,7 +271,7 @@ class IntentProvider(IntentProviderBase):
                 function_args = function_data.get("arguments", {})
 
                 # 记录识别到的function call
-                logger.bind(tag=TAG).info(
+                logger.bind(tag=TAG).debug(
                     f"llm 识别到意图: {function_name}, 参数: {function_args}"
                 )
 

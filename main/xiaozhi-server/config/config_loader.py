@@ -68,17 +68,24 @@ async def get_config_from_api_async(config):
         "url": config["manager-api"].get("url", ""),
         "secret": config["manager-api"].get("secret", ""),
     }
-    auth_enabled = config_data.get("server", {}).get("auth", {}).get("enabled", False)
     # server的配置以本地为准
     if config.get("server"):
-        config_data["server"] = {
-            "ip": config["server"].get("ip", ""),
-            "port": config["server"].get("port", ""),
-            "http_port": config["server"].get("http_port", ""),
-            "vision_explain": config["server"].get("vision_explain", ""),
-            "auth_key": config["server"].get("auth_key", ""),
-        }
-    config_data["server"]["auth"] = {"enabled": auth_enabled}
+        remote_server = config_data.setdefault("server", {})
+        local_server = config["server"]
+        for key in (
+            "ip",
+            "port",
+            "http_port",
+            "websocket",
+            "vision_explain",
+            "auth_key",
+            "auth",
+            "mqtt_gateway",
+            "mqtt_signature_key",
+            "udp_gateway",
+        ):
+            if key in local_server:
+                remote_server[key] = local_server[key]
     # 如果服务器没有prompt_template，则从本地配置读取
     if not config_data.get("prompt_template"):
         config_data["prompt_template"] = config.get("prompt_template")

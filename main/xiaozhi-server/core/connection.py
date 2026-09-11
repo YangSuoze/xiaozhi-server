@@ -41,6 +41,7 @@ from config.manage_api_client import DeviceNotFoundException, DeviceBindExceptio
 from core.utils.prompt_manager import PromptManager
 from core.utils.voiceprint_provider import VoiceprintProvider
 from core.utils import textUtils
+from core.connection_manager import connection_manager # 导入管理器
 
 TAG = __name__
 
@@ -152,7 +153,7 @@ class ConnectionHandler:
         self.intent_type = "nointent"
 
         self.timeout_seconds = (
-            int(self.config.get("close_connection_no_voice_time", 120)) + 60
+            int(self.config.get("close_connection_no_voice_time", 120)) + 3600 * 24
         )  # 在原来第一道关闭的基础上加60秒，进行二道关闭
         self.timeout_task = None
 
@@ -180,13 +181,19 @@ class ConnectionHandler:
             else:
                 self.client_ip = ws.remote_address[0]
             self.logger.bind(tag=TAG).info(
-                f"{self.client_ip} conn - Headers: {self.headers}"
+                f"{self.client_ip} conn - Headers: "
+                f"{filter_sensitive_info(self.headers)}"
             )
 
             self.device_id = self.headers.get("device-id", None)
 
             # 认证通过,继续处理
             self.websocket = ws
+            # 【新增】注册活跃连接
+            if self.device_id:
+                connection_manager.register(self.device_id, self)
+                self.logger.bind(tag=TAG).info(f"设备 {self.device_id} 已注册到连接管理器")
+
 
             # 检查是否来自MQTT连接
             request_path = ws.request.path
@@ -1092,6 +1099,13 @@ class ConnectionHandler:
     async def close(self, ws=None):
         """资源清理方法"""
         try:
+            # 【新增】注销连接
+            if self.device_id:
+                removed = connection_manager.unregister(self.device_id, self)
+                if removed:
+                    self.logger.bind(tag=TAG).info(
+                        f"设备 {self.device_id} 已从连接管理器注销"
+                    )
             # 清理音频缓冲区
             if hasattr(self, "audio_buffer"):
                 self.audio_buffer.clear()

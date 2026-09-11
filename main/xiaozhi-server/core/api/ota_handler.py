@@ -9,8 +9,8 @@ import glob
 from typing import Dict, List, Tuple
 from aiohttp import web
 
-from core.auth import AuthManager
-from core.utils.util import get_local_ip, get_vision_url
+from core.auth import AuthManager, normalize_device_id, verify_device_secret
+from core.utils.util import filter_sensitive_info, get_local_ip, get_vision_url
 from core.api.base_handler import BaseHandler
 
 TAG = __name__
@@ -49,7 +49,16 @@ class OTAHandler(BaseHandler):
         auth_config = config["server"].get("auth", {})
         self.auth_enable = auth_config.get("enabled", False)
         # 设备白名单
-        self.allowed_devices = set(auth_config.get("allowed_devices", []))
+        self.allowed_devices = {
+            normalize_device_id(device_id)
+            for device_id in auth_config.get("allowed_devices", [])
+            if device_id
+        }
+        self.device_secrets = {
+            normalize_device_id(device_id): str(secret)
+            for device_id, secret in auth_config.get("device_secrets", {}).items()
+            if device_id and secret and "请替换" not in str(secret)
+        }
         secret_key = config["server"]["auth_key"]
         expire_seconds = auth_config.get("expire_seconds")
         self.auth = AuthManager(secret_key=secret_key, expire_seconds=expire_seconds)
@@ -152,7 +161,9 @@ class OTAHandler(BaseHandler):
         try:
             data = await request.text()
             self.logger.bind(tag=TAG).debug(f"OTA请求方法: {request.method}")
-            self.logger.bind(tag=TAG).debug(f"OTA请求头: {request.headers}")
+            self.logger.bind(tag=TAG).debug(
+                f"OTA请求头: {filter_sensitive_info(dict(request.headers))}"
+            )
             self.logger.bind(tag=TAG).debug(f"OTA请求数据: {data}")
 
             device_id = request.headers.get("device-id", "")
@@ -166,6 +177,23 @@ class OTAHandler(BaseHandler):
                 self.logger.bind(tag=TAG).info(f"OTA请求ClientID: {client_id}")
             else:
                 raise Exception("OTA请求ClientID为空")
+
+            supplied_device_secret = request.headers.get("x-device-secret", "")
+            if self.auth_enable and not verify_device_secret(
+                device_id,
+                supplied_device_secret,
+                self.allowed_devices,
+                self.device_secrets,
+            ):
+                response = web.Response(
+                    text=json.dumps(
+                        {"success": False, "message": "device is not allowed"},
+                        separators=(",", ":"),
+                    ),
+                    status=403,
+                    content_type="application/json",
+                )
+                return response
 
             data_json = {}
             try:
@@ -283,11 +311,7 @@ class OTAHandler(BaseHandler):
                 # 如果开启了认证，则进行认证校验
                 token = ""
                 if self.auth_enable:
-                    if self.allowed_devices:
-                        if device_id not in self.allowed_devices:
-                            token = self.auth.generate_token(client_id, device_id)
-                    else:
-                        token = self.auth.generate_token(client_id, device_id)
+                    token = self.auth.generate_token(client_id, device_id)
                 # NOTE: use websocket_port here
                 return_json["websocket"] = {
                     "url": self._get_websocket_url(local_ip, websocket_port),

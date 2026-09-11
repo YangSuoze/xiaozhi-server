@@ -4,6 +4,29 @@ import hashlib
 import time
 
 
+def normalize_device_id(device_id: str) -> str:
+    return str(device_id or "").strip().lower()
+
+
+def verify_device_secret(
+    device_id: str,
+    supplied_secret: str,
+    allowed_devices,
+    device_secrets,
+) -> bool:
+    """校验设备是否在白名单内，以及是否持有对应的预置密钥。"""
+    normalized_id = normalize_device_id(device_id)
+    normalized_allowed = {
+        normalize_device_id(item) for item in allowed_devices if item
+    }
+    expected_secret = device_secrets.get(normalized_id, "")
+    if not normalized_id or normalized_id not in normalized_allowed:
+        return False
+    if not expected_secret or not supplied_secret:
+        return False
+    return hmac.compare_digest(str(supplied_secret), str(expected_secret))
+
+
 class AuthenticationError(Exception):
     """认证异常"""
 
@@ -60,7 +83,8 @@ class AuthManager:
         try:
             sig_part, ts_str = token.split(".")
             ts = int(ts_str)
-            if int(time.time()) - ts > self.expire_seconds:
+            token_age = int(time.time()) - ts
+            if token_age > self.expire_seconds or token_age < -60:
                 return False  # 过期
 
             expected_sig = self._sign(f"{client_id}|{username}|{ts}")
