@@ -66,6 +66,60 @@ def _normalize_status(value: Any) -> str:
     return mapping.get(str(value), "unknown")
 
 
+def _normalize_progress(value: Any) -> dict[str, Any] | None:
+    """Accept only the short, speakable progress fields produced by the bridge."""
+    if not isinstance(value, dict):
+        return None
+    progress: dict[str, Any] = {}
+    limits = {
+        "current_action": 220,
+        "recent_result": 220,
+        "next_step": 180,
+        "revision": 180,
+        "source_message_id": 180,
+    }
+    for field, limit in limits.items():
+        text = _short_text(value.get(field), limit)
+        if text:
+            progress[field] = text
+    if value.get("updated_at") is not None:
+        try:
+            progress["updated_at"] = float(value["updated_at"])
+        except (TypeError, ValueError):
+            pass
+    progress["needs_input"] = bool(value.get("needs_input", False))
+    return progress if len(progress) > 1 or progress.get("revision") else None
+
+
+def _progress_details(progress: dict[str, Any] | None) -> str:
+    if not progress:
+        return "Codex最近没有提供新的步骤说明。"
+    parts: list[str] = []
+    seen: set[str] = set()
+    labels = (
+        ("current_action", "正在做"),
+        ("recent_result", "刚完成"),
+        ("next_step", "下一步"),
+    )
+    for field, label in labels:
+        value = _short_text(progress.get(field), 180)
+        comparable = value.rstrip("。！？.!? ")
+        if not comparable or comparable in seen:
+            continue
+        seen.add(comparable)
+        parts.append(f"{label}：{comparable}。")
+    return "".join(parts) or "Codex最近没有提供新的步骤说明。"
+
+
+def _status_message(
+    title: str, status: str, progress: dict[str, Any] | None, unchanged: bool = False
+) -> str:
+    text = f"任务“{_short_text(title, 40)}”当前状态：{STATUS_TEXT[status]}。"
+    if unchanged:
+        return text + "当前步骤没有变化。" + _progress_details(progress)
+    return text + _progress_details(progress)
+
+
 class CodexControlService:
     """Coordinates device conversations, bridge jobs and status notifications."""
 
@@ -142,12 +196,12 @@ class CodexControlService:
             selected_thread_host_id=None,
             recent_threads=[],
             task_status="unknown",
-            task_summary=None,
+            task_progress=None,
             current_turn_id=None,
             pending_request=None,
             announcements_enabled=False,
             next_announcement_at=None,
-            last_announced_status=None,
+            last_announced_progress_revision=None,
             announcement_prompted=False,
             expires_at=self._touch_expiry(),
         )
@@ -223,7 +277,7 @@ class CodexControlService:
             selected_thread_title=selected["title"],
             selected_thread_host_id=selected.get("host_id"),
             task_status=_normalize_status(selected.get("status")),
-            task_summary=None,
+            task_progress=None,
             pending_request=None,
             expires_at=self._touch_expiry(),
         )
@@ -247,10 +301,7 @@ class CodexControlService:
         if not title:
             return "当前还没有选择要监控的Codex任务。"
         status = _normalize_status(session.get("task_status"))
-        text = f"任务“{_short_text(title, 40)}”当前状态：{STATUS_TEXT[status]}。"
-        summary = _short_text(session.get("task_summary"), 160)
-        if summary:
-            text += f"最新进展：{summary}"
+        text = _status_message(title, status, session.get("task_progress"))
         self.store.create_job(
             device_id,
             "get_status",
@@ -395,7 +446,7 @@ class CodexControlService:
             selected_thread_title=None,
             selected_thread_host_id=None,
             task_status="unknown",
-            task_summary=None,
+            task_progress=None,
             current_turn_id=None,
             pending_request=None,
             announcements_enabled=False,
@@ -424,6 +475,8 @@ class CodexControlService:
             selected_thread_id=None,
             selected_thread_title=None,
             selected_thread_host_id=None,
+            task_status="unknown",
+            task_progress=None,
             pending_request=None,
             announcements_enabled=False,
             next_announcement_at=None,
@@ -508,17 +561,27 @@ class CodexControlService:
             self.store.queue_notification(device_id, self._format_thread_list(threads))
         elif kind in {"monitor_thread", "get_status"}:
             status = _normalize_status(response.get("status"))
+            progress = _normalize_progress(response.get("progress"))
+            previous_progress = session.get("task_progress") or {}
             self.store.patch_session(
                 device_id,
                 task_status=status,
                 current_turn_id=response.get("turn_id"),
-                task_summary=_short_text(response.get("summary"), 300) or None,
+                task_progress=progress,
             )
             if kind == "monitor_thread":
                 title = session.get("selected_thread_title") or "当前任务"
                 self.store.queue_notification(
                     device_id,
-                    f"已开始监控“{_short_text(title, 40)}”。当前状态：{STATUS_TEXT[status]}。",
+                    "已开始监控。" + _status_message(title, status, progress),
+                )
+            elif progress and progress.get("revision") != previous_progress.get(
+                "revision"
+            ):
+                title = session.get("selected_thread_title") or "当前任务"
+                self.store.queue_notification(
+                    device_id,
+                    "刚刚获取到最新进展。" + _status_message(title, status, progress),
                 )
         elif kind == "send_message":
             self.store.patch_session(
@@ -585,10 +648,17 @@ class CodexControlService:
                 outcome = _normalize_status(event.get("status") or "completed")
                 if outcome not in {"failed", "interrupted"}:
                     outcome = "idle"
+                progress = _normalize_progress(event.get("progress"))
+                if not progress and summary:
+                    progress = {
+                        "recent_result": summary,
+                        "revision": _short_text(event.get("turn_id"), 180),
+                        "needs_input": False,
+                    }
                 self.store.patch_session(
                     device_id,
                     task_status=outcome,
-                    task_summary=summary or None,
+                    task_progress=progress,
                     current_turn_id=None,
                     pending_request=None,
                 )
@@ -602,6 +672,25 @@ class CodexControlService:
                     if summary:
                         message += f"结果：{summary}"
                     self.store.queue_notification(device_id, message)
+                continue
+            if event_type == "thread_progress":
+                status = _normalize_status(event.get("status"))
+                progress = _normalize_progress(event.get("progress"))
+                self.store.patch_session(
+                    device_id,
+                    task_status=status,
+                    task_progress=progress,
+                    current_turn_id=event.get("turn_id"),
+                )
+                if status in {"idle", "completed", "failed", "interrupted"}:
+                    self.store.unblock_jobs_for_thread(thread_id)
+                if session.get("announcements_enabled") and status != previous:
+                    title = session.get("selected_thread_title") or "当前任务"
+                    self.store.queue_notification(
+                        device_id,
+                        "Codex任务状态已变化。"
+                        + _status_message(title, status, progress),
+                    )
                 continue
             if event_type == "thread_status":
                 status = _normalize_status(event.get("status"))
@@ -630,10 +719,11 @@ class CodexControlService:
                 for session in self.store.due_periodic_sessions():
                     title = session.get("selected_thread_title") or "当前任务"
                     status = _normalize_status(session.get("task_status"))
-                    text = f"Codex任务“{_short_text(title, 40)}”当前状态：{STATUS_TEXT[status]}。"
-                    summary = _short_text(session.get("task_summary"), 160)
-                    if summary:
-                        text += f"最新进展：{summary}"
+                    progress = session.get("task_progress") or {}
+                    unchanged = bool(progress.get("revision")) and progress.get(
+                        "revision"
+                    ) == session.get("last_announced_progress_revision")
+                    text = _status_message(title, status, progress, unchanged)
                     self.store.queue_notification(session["device_id"], text, 900)
                     self.store.advance_periodic_announcement(session["device_id"])
 

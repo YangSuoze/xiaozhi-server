@@ -11,7 +11,7 @@ CODEX_CONTROL_DESC = {
             "控制电脑上的Codex桌面任务。用户明确提到Codex，或者当前对话已经"
             "进入Codex模式、正在等待选择或等待回答时调用。"
             "支持进入Codex模式、选择最近任务、发送或补充指令、回答Codex问题、"
-            "查询状态、设置播报、停止监控和退出。进入模式后用户说‘第一个’等"
+            "查询状态和具体进展、设置播报、停止监控和退出。进入模式后用户说‘第一个’等"
             "序号是在选择任务；选中任务后的普通工作要求使用send_instruction。"
         ),
         "parameters": {
@@ -74,7 +74,7 @@ CODEX_CONTROL_DESC = {
                     "text": "检查服务器日志",
                 },
             },
-            {"user_query": "Codex现在做到哪了", "answer": {"action": "status"}},
+            {"user_query": "Codex现在做到哪一步了", "answer": {"action": "status"}},
             {
                 "user_query": "需要，每五分钟告诉我一次",
                 "answer": {

@@ -23,13 +23,13 @@ SESSION_DEFAULTS = {
     "selected_thread_host_id": None,
     "recent_threads": [],
     "task_status": "unknown",
-    "task_summary": None,
+    "task_progress": None,
     "current_turn_id": None,
     "pending_request": None,
     "announcements_enabled": 0,
     "announcement_interval": 300,
     "next_announcement_at": None,
-    "last_announced_status": None,
+    "last_announced_progress_revision": None,
     "announcement_prompted": 0,
     "expires_at": None,
 }
@@ -79,6 +79,7 @@ class CodexStore:
         item["pending_request"] = CodexStore._loads(
             item.pop("pending_request_json", None)
         )
+        item["task_progress"] = CodexStore._loads(item.pop("task_progress_json", None))
         item["active"] = bool(item["active"])
         item["announcements_enabled"] = bool(item["announcements_enabled"])
         item["announcement_prompted"] = bool(item["announcement_prompted"])
@@ -107,13 +108,13 @@ class CodexStore:
                     selected_thread_host_id TEXT,
                     recent_threads_json TEXT NOT NULL DEFAULT '[]',
                     task_status TEXT NOT NULL DEFAULT 'unknown',
-                    task_summary TEXT,
+                    task_progress_json TEXT,
                     current_turn_id TEXT,
                     pending_request_json TEXT,
                     announcements_enabled INTEGER NOT NULL DEFAULT 0,
                     announcement_interval INTEGER NOT NULL DEFAULT 300,
                     next_announcement_at REAL,
-                    last_announced_status TEXT,
+                    last_announced_progress_revision TEXT,
                     announcement_prompted INTEGER NOT NULL DEFAULT 0,
                     expires_at REAL,
                     updated_at REAL NOT NULL
@@ -165,6 +166,14 @@ class CodexStore:
             if "selected_thread_host_id" not in session_columns:
                 connection.execute(
                     "ALTER TABLE sessions ADD COLUMN selected_thread_host_id TEXT"
+                )
+            if "task_progress_json" not in session_columns:
+                connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN task_progress_json TEXT"
+                )
+            if "last_announced_progress_revision" not in session_columns:
+                connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN last_announced_progress_revision TEXT"
                 )
 
     def heartbeat(
@@ -239,7 +248,7 @@ class CodexStore:
                 encoded = {}
                 for key, value in changes.items():
                     column = key
-                    if key in {"recent_threads", "pending_request"}:
+                    if key in {"recent_threads", "pending_request", "task_progress"}:
                         column = f"{key}_json"
                         value = (
                             None
@@ -522,7 +531,9 @@ class CodexStore:
         self.patch_session(
             device_id,
             next_announcement_at=time.time() + interval,
-            last_announced_status=session.get("task_status"),
+            last_announced_progress_revision=(session.get("task_progress") or {}).get(
+                "revision"
+            ),
         )
 
     def cleanup(self, retention_hours: int = 72) -> None:

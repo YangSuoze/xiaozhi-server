@@ -59,6 +59,10 @@ def test_bridge_api_authenticates_and_leases_jobs(tmp_path):
     )
     assert json.loads(response.text) == {"ok": True}
 
+    health = json.loads(asyncio.run(handler.health(FakeRequest({}))).text)
+    assert health["bridge"]["version"] == "1.0"
+    assert health["bridge"]["capabilities"] == {"thread_list": True}
+
     service.store.create_job("speaker-1", "list_threads", {"limit": 3})
     response = asyncio.run(handler.lease_job(FakeRequest({"bridge_id": "mac-home"})))
     job = json.loads(response.text)["job"]

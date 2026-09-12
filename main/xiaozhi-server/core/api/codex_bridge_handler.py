@@ -101,6 +101,7 @@ class CodexBridgeHandler:
         if not isinstance(event, dict):
             raise web.HTTPBadRequest(text="event must be an object")
         if event.get("type") not in {
+            "thread_progress",
             "thread_status",
             "turn_completed",
             "user_input",
@@ -121,6 +122,8 @@ class CodexBridgeHandler:
                     {
                         "id": bridge["bridge_id"],
                         "hostname": bridge["hostname"],
+                        "version": bridge.get("version"),
+                        "capabilities": bridge.get("capabilities") or {},
                         "last_seen_at": bridge["last_seen_at"],
                     }
                     if bridge

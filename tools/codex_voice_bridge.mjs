@@ -7,8 +7,9 @@ import { hostname } from "node:os";
 import net from "node:net";
 import process from "node:process";
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 
-const VERSION = "2.0.0";
+const VERSION = "2.1.0";
 const APP_TOOLS_PIPE = "CODEX_APP_TOOLS_PIPE_PATH";
 const DEFAULT_CODEX = "/Applications/ChatGPT.app/Contents/Resources/codex";
 
@@ -58,6 +59,9 @@ function sleep(milliseconds) {
 }
 
 function normalizedStatus(value) {
+  const flags = new Set(typeof value === "object" ? value?.activeFlags ?? [] : []);
+  if (flags.has("waitingOnUserInput")) return "waiting_user_input";
+  if (flags.has("waitingOnApproval")) return "waiting_approval";
   const status = typeof value === "object" ? value?.type : value;
   const mapping = {
     active: "active",
@@ -74,6 +78,142 @@ function normalizedStatus(value) {
     waiting_approval: "waiting_approval",
   };
   return mapping[String(status)] ?? "unknown";
+}
+
+function limitedText(value, limit) {
+  const text = String(value ?? "").replace(/\s+/gu, " ").trim();
+  return text.length <= limit ? text : `${text.slice(0, limit - 1).trimEnd()}…`;
+}
+
+export function cleanProgressText(value, limit = 220) {
+  let text = String(value ?? "");
+  text = text.replace(/```[\s\S]*?```/gu, " ");
+  text = text.replace(/!\[([^\]]*)\]\([^)]*\)/gu, "$1");
+  text = text.replace(/\[([^\]]+)\]\([^)]*\)/gu, "$1");
+  text = text.replace(/https?:\/\/\S+/giu, "网页链接");
+  text = text.replace(/\/(?:Users|home|tmp|var|Applications|Volumes)\/[^\s，。；！？,;!?]+/gu, "本地文件");
+  text = text.replace(/[A-Za-z]:\\[^\s，。；！？,;!?]+/gu, "本地文件");
+  text = text.replace(
+    /\b(api[_-]?key|access[_-]?key|token|secret|password)\b\s*[:=]\s*[^\s，。；！？,;!?]+/giu,
+    "$1已隐藏",
+  );
+  text = text.replace(/\b[A-Za-z0-9_-]{40,}\b/gu, "敏感内容已隐藏");
+  text = text.replace(/<[^>]{1,200}>/gu, " ");
+  text = text.replace(/[`*_>#|]/gu, " ");
+  text = text.replace(/\s+本地文件/gu, "本地文件");
+  return limitedText(text, limit);
+}
+
+function sentences(text) {
+  return String(text ?? "")
+    .split(/(?<=[。！？.!?；;])\s*/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function matchingSentence(text, pattern) {
+  return sentences(text).find((item) => pattern.test(item)) ?? "";
+}
+
+function toolActivity(marker) {
+  if (!marker) return "";
+  const mapping = {
+    commandExecution: "正在运行命令或测试",
+    fileChange: "正在修改文件",
+    mcpToolCall: "正在调用桌面工具",
+    imageView: "正在检查图片",
+    subAgentActivity: "正在协调子任务",
+  };
+  return mapping[marker.type] ?? "正在处理当前任务";
+}
+
+export function buildProgressSnapshot(poll, fallbackStatus = "unknown") {
+  if (!poll || typeof poll !== "object") return null;
+  const status = normalizedStatus(poll.thread?.status ?? fallbackStatus);
+  const message = poll.latestAssistantMessage ?? null;
+  const cleaned = cleanProgressText(message?.text);
+  const phase = message?.phase;
+  let currentAction = "";
+  let recentResult = "";
+  let nextStep = "";
+
+  if (phase === "final_answer") {
+    recentResult = cleaned;
+  } else if (cleaned) {
+    const messageSentences = sentences(cleaned);
+    recentResult = cleanProgressText(
+      matchingSentence(cleaned, /已经|已完成|完成了|通过了|定位到|发现了|修复了|生成了|部署了/u),
+      180,
+    );
+    nextStep = cleanProgressText(
+      matchingSentence(cleaned, /下一步|接下来|随后|之后会|准备/u),
+      160,
+    );
+    const activeSentence =
+      matchingSentence(cleaned, /正在|当前|现在|开始|处理中|着手/u) ||
+      messageSentences.find(
+        (item) =>
+          item !== recentResult &&
+          item !== nextStep &&
+          /处理|检查|修改|运行|部署|生成/u.test(item),
+      );
+    currentAction = cleanProgressText(
+      activeSentence || (!recentResult && !nextStep ? messageSentences[0] : ""),
+      180,
+    );
+  } else if (status === "active") {
+    currentAction = toolActivity(poll.latestToolMarker);
+  }
+
+  const revisionSource =
+    message?.id ??
+    [poll.latestTurn?.id, poll.latestTurn?.status, poll.latestToolMarker?.id, status]
+      .filter(Boolean)
+      .join(":");
+  if (!revisionSource && !currentAction && !recentResult) return null;
+  return {
+    current_action: currentAction || null,
+    recent_result: recentResult || null,
+    next_step: nextStep || null,
+    needs_input: ["waiting_user_input", "waiting_approval"].includes(status),
+    revision: limitedText(revisionSource, 180),
+    source_message_id: message?.id ?? null,
+    updated_at: Date.now() / 1000,
+  };
+}
+
+function pollFromThreadRead(result) {
+  const turns = result.turns ?? [];
+  let latestAssistantMessage = null;
+  let latestToolMarker = null;
+  for (const turn of turns) {
+    const items = turn.items ?? [];
+    if (!latestAssistantMessage) {
+      const message = items.filter((item) => item.type === "agentMessage").at(-1);
+      if (message) latestAssistantMessage = { ...message, turnId: turn.id };
+    }
+    if (!latestToolMarker) {
+      const marker = items
+        .filter((item) =>
+          ["commandExecution", "fileChange", "mcpToolCall", "imageView", "subAgentActivity"].includes(
+            item.type,
+          ),
+        )
+        .at(-1);
+      if (marker) latestToolMarker = { ...marker, turnId: turn.id };
+    }
+    if (latestAssistantMessage && latestToolMarker) break;
+  }
+  return {
+    thread: {
+      id: result.thread?.id,
+      hostId: result.thread?.hostId,
+      status: result.thread?.status,
+    },
+    latestTurn: turns[0] ?? null,
+    latestAssistantMessage,
+    latestToolMarker,
+  };
 }
 
 function parseToolResult(result) {
@@ -121,7 +261,11 @@ class CloudClient {
       bridge_id: this.bridgeId,
       hostname: hostname(),
       version: VERSION,
-      capabilities: { desktop_app_tools: true, task_monitoring: true },
+      capabilities: {
+        desktop_app_tools: true,
+        task_monitoring: true,
+        progress_snapshots: true,
+      },
     });
   }
 
@@ -351,9 +495,11 @@ class VoiceBridge {
     this.stopping = false;
   }
 
-  async callerThreadId() {
-    const threads = await this.catalog.recentLocalThreads(1);
-    const id = threads[0]?.id ?? threads[0]?.sessionId;
+  async callerThreadId(excludedThreadId = null) {
+    const threads = await this.catalog.recentLocalThreads(20);
+    const selected =
+      threads.find((item) => (item.id ?? item.sessionId) !== excludedThreadId) ?? threads[0];
+    const id = selected?.id ?? selected?.sessionId;
     if (!id) throw new Error("Codex desktop has no local task to use as the bridge context");
     return id;
   }
@@ -387,6 +533,42 @@ class VoiceBridge {
     return { status: task.status, host_id: hostId ?? task.host_id };
   }
 
+  async taskSnapshot(threadId, hostId = null, cursor = null, previousProgress = null) {
+    const caller = await this.callerThreadId(threadId);
+    const target = { threadId };
+    if (hostId) target.hostId = hostId;
+    if (cursor) target.afterCursor = cursor;
+    let poll;
+    try {
+      const result = await this.appTools.call(
+        "wait_threads",
+        { targets: [target], timeoutMs: 0 },
+        caller,
+      );
+      poll =
+        (result.polls ?? []).find((item) => item.thread?.id === threadId) ?? result.polls?.[0];
+    } catch (error) {
+      if (!String(error?.message).includes("calling thread")) throw error;
+      const argumentsValue = {
+        threadId,
+        turnLimit: 3,
+        includeOutputs: true,
+        maxOutputCharsPerItem: 1200,
+      };
+      if (hostId) argumentsValue.hostId = hostId;
+      poll = pollFromThreadRead(await this.appTools.call("read_thread", argumentsValue, caller));
+    }
+    if (!poll) return { ...(await this.taskStatus(threadId, hostId)), progress: previousProgress, cursor };
+    const status = normalizedStatus(poll.thread?.status);
+    return {
+      status,
+      host_id: hostId ?? poll.thread?.hostId ?? null,
+      turn_id: poll.latestTurn?.id ?? null,
+      progress: buildProgressSnapshot(poll, status) ?? previousProgress,
+      cursor: poll.cursor ?? cursor,
+    };
+  }
+
   async sendToTask(payload) {
     const caller = await this.callerThreadId();
     const argumentsValue = { threadId: String(payload.thread_id), prompt: String(payload.text ?? "") };
@@ -400,11 +582,19 @@ class VoiceBridge {
     const payload = job.payload ?? {};
     if (job.kind === "list_threads") return { threads: await this.listTasks(payload.limit ?? 3, true) };
     if (job.kind === "monitor_thread") {
-      const result = await this.taskStatus(String(payload.thread_id), payload.host_id);
-      this.monitored.set(String(payload.thread_id), { hostId: result.host_id, status: result.status });
-      return { status: result.status, turn_id: null };
+      const result = await this.taskSnapshot(String(payload.thread_id), payload.host_id);
+      this.monitored.set(String(payload.thread_id), {
+        hostId: result.host_id,
+        status: result.status,
+        cursor: result.cursor,
+        progress: result.progress,
+      });
+      return { status: result.status, turn_id: result.turn_id, progress: result.progress };
     }
-    if (job.kind === "get_status") return this.taskStatus(String(payload.thread_id), payload.host_id);
+    if (job.kind === "get_status") {
+      const result = await this.taskSnapshot(String(payload.thread_id), payload.host_id);
+      return { status: result.status, turn_id: result.turn_id, progress: result.progress };
+    }
     if (job.kind === "send_message") return this.sendToTask(payload);
     if (job.kind === "respond_request") {
       const text = payload.approved == null ? payload.answer : payload.approved ? "批准" : "拒绝";
@@ -429,28 +619,32 @@ class VoiceBridge {
 
   async pollMonitoredTasks() {
     if (this.monitored.size === 0) return;
-    const tasks = await this.listTasks(100, true);
-    const byId = new Map(tasks.map((item) => [item.id, item]));
     for (const [threadId, state] of this.monitored) {
-      const task = byId.get(threadId);
-      if (!task || task.status === state.status) continue;
-      const previous = state.status;
-      state.status = task.status;
-      await this.cloud.postEvent({
-        type: "thread_status",
-        thread_id: threadId,
-        status: task.status,
-        turn_id: null,
-      });
-      if (previous === "active" && task.status === "idle") {
-        await this.cloud.postEvent({
-          type: "turn_completed",
-          thread_id: threadId,
-          turn_id: null,
-          status: "completed",
-          summary: "",
-        });
+      const snapshot = await this.taskSnapshot(
+        threadId,
+        state.hostId,
+        state.cursor,
+        state.progress,
+      );
+      const previousStatus = state.status;
+      const previousRevision = state.progress?.revision;
+      state.hostId = snapshot.host_id;
+      state.status = snapshot.status;
+      state.cursor = snapshot.cursor;
+      state.progress = snapshot.progress;
+      if (
+        snapshot.status === previousStatus &&
+        snapshot.progress?.revision === previousRevision
+      ) {
+        continue;
       }
+      await this.cloud.postEvent({
+        type: "thread_progress",
+        thread_id: threadId,
+        status: snapshot.status,
+        turn_id: snapshot.turn_id,
+        progress: snapshot.progress,
+      });
     }
   }
 
@@ -515,20 +709,22 @@ function startMcpStdio() {
   return input;
 }
 
-let bridge;
-try {
-  const options = parseArgs(process.argv.slice(2));
-  const mcpInput = startMcpStdio();
-  bridge = new VoiceBridge(options);
-  const shutdown = () => {
-    mcpInput.close();
-    bridge.close();
-    setTimeout(() => process.exit(0), 100);
-  };
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
-  await bridge.run();
-} catch (error) {
-  log("FATAL", "Codex voice bridge could not start", error);
-  process.exitCode = 1;
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  let bridge;
+  try {
+    const options = parseArgs(process.argv.slice(2));
+    const mcpInput = startMcpStdio();
+    bridge = new VoiceBridge(options);
+    const shutdown = () => {
+      mcpInput.close();
+      bridge.close();
+      setTimeout(() => process.exit(0), 100);
+    };
+    process.on("SIGTERM", shutdown);
+    process.on("SIGINT", shutdown);
+    await bridge.run();
+  } catch (error) {
+    log("FATAL", "Codex voice bridge could not start", error);
+    process.exitCode = 1;
+  }
 }

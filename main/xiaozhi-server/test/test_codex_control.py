@@ -193,3 +193,71 @@ def test_announcement_configuration_is_bounded(tmp_path):
     session = service.store.get_session("speaker-1")
     assert session["announcement_interval"] == 120 * 60
     assert session["next_announcement_at"] is not None
+
+
+def test_progress_snapshot_explains_current_work_and_next_step(tmp_path):
+    service = make_service(tmp_path)
+    service.store.patch_session(
+        "speaker-1",
+        active=True,
+        stage="monitoring",
+        bridge_id="mac-home",
+        selected_thread_id="thread-a",
+        selected_thread_title="服务器排查",
+        selected_thread_host_id="local",
+        task_status="active",
+    )
+
+    service.handle_bridge_event(
+        {
+            "type": "thread_progress",
+            "thread_id": "thread-a",
+            "turn_id": "turn-1",
+            "status": "active",
+            "progress": {
+                "current_action": "正在修改令牌刷新逻辑",
+                "recent_result": "已经定位到过期令牌没有重试",
+                "next_step": "运行登录相关测试",
+                "revision": "message-2",
+                "updated_at": time.time(),
+            },
+        }
+    )
+
+    session = service.store.get_session("speaker-1")
+    assert session["task_progress"]["revision"] == "message-2"
+    response = service.get_status("speaker-1")
+    assert "正在做：正在修改令牌刷新逻辑" in response
+    assert "刚完成：已经定位到过期令牌没有重试" in response
+    assert "下一步：运行登录相关测试" in response
+
+
+def test_get_status_notifies_only_when_fresher_progress_arrives(tmp_path):
+    service = make_service(tmp_path)
+    store = service.store
+    store.patch_session(
+        "speaker-1",
+        active=True,
+        bridge_id="mac-home",
+        selected_thread_id="thread-a",
+        selected_thread_title="服务器排查",
+        task_status="active",
+        task_progress={"current_action": "正在查看日志", "revision": "message-1"},
+    )
+    service.get_status("speaker-1")
+    job = store.lease_job("mac-home", 60)
+    complete(
+        service,
+        "mac-home",
+        job,
+        {
+            "status": "active",
+            "progress": {
+                "current_action": "正在修改配置",
+                "revision": "message-2",
+            },
+        },
+    )
+    notification = store.claim_notification()
+    assert "刚刚获取到最新进展" in notification["text"]
+    assert "正在修改配置" in notification["text"]
