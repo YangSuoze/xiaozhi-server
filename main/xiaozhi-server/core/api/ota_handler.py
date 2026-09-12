@@ -185,6 +185,15 @@ class OTAHandler(BaseHandler):
                 self.allowed_devices,
                 self.device_secrets,
             ):
+                normalized_device_id = normalize_device_id(device_id)
+                self.logger.bind(tag=TAG).warning(
+                    "OTA鉴权失败: device_id={}, known_device={}, "
+                    "secret_configured={}, secret_provided={}",
+                    normalized_device_id,
+                    normalized_device_id in self.allowed_devices,
+                    bool(self.device_secrets.get(normalized_device_id)),
+                    bool(supplied_device_secret),
+                )
                 response = web.Response(
                     text=json.dumps(
                         {"success": False, "message": "device is not allowed"},
