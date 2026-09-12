@@ -152,7 +152,9 @@ export function buildProgressSnapshot(poll, fallbackStatus = "unknown") {
       160,
     );
     const activeSentence =
-      matchingSentence(cleaned, /正在|当前|现在|开始|处理中|着手/u) ||
+      messageSentences.find(
+        (item) => item !== recentResult && /正在|当前|现在|开始|处理中|着手/u.test(item),
+      ) ||
       messageSentences.find(
         (item) =>
           item !== recentResult &&
@@ -166,6 +168,7 @@ export function buildProgressSnapshot(poll, fallbackStatus = "unknown") {
   } else if (status === "active") {
     currentAction = toolActivity(poll.latestToolMarker);
   }
+  if (!currentAction && status === "active") currentAction = toolActivity(poll.latestToolMarker);
   if (!recentResult && poll.previousAssistantMessage?.phase === "final_answer") {
     recentResult = cleanProgressText(poll.previousAssistantMessage.text, 180);
   }
