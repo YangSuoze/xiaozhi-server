@@ -20,6 +20,7 @@ SESSION_DEFAULTS = {
     "bridge_id": None,
     "selected_thread_id": None,
     "selected_thread_title": None,
+    "selected_thread_host_id": None,
     "recent_threads": [],
     "task_status": "unknown",
     "task_summary": None,
@@ -103,6 +104,7 @@ class CodexStore:
                     bridge_id TEXT,
                     selected_thread_id TEXT,
                     selected_thread_title TEXT,
+                    selected_thread_host_id TEXT,
                     recent_threads_json TEXT NOT NULL DEFAULT '[]',
                     task_status TEXT NOT NULL DEFAULT 'unknown',
                     task_summary TEXT,
@@ -156,6 +158,14 @@ class CodexStore:
                     ON notifications(status, available_at, created_at);
                 """
             )
+            session_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+            }
+            if "selected_thread_host_id" not in session_columns:
+                connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN selected_thread_host_id TEXT"
+                )
 
     def heartbeat(
         self,

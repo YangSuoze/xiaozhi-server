@@ -139,6 +139,7 @@ class CodexControlService:
             bridge_id=bridge_id,
             selected_thread_id=None,
             selected_thread_title=None,
+            selected_thread_host_id=None,
             recent_threads=[],
             task_status="unknown",
             task_summary=None,
@@ -220,6 +221,7 @@ class CodexControlService:
             stage="monitoring",
             selected_thread_id=selected["id"],
             selected_thread_title=selected["title"],
+            selected_thread_host_id=selected.get("host_id"),
             task_status=_normalize_status(selected.get("status")),
             task_summary=None,
             pending_request=None,
@@ -228,7 +230,11 @@ class CodexControlService:
         self.store.create_job(
             device_id,
             "monitor_thread",
-            {"thread_id": selected["id"], "title": selected["title"]},
+            {
+                "thread_id": selected["id"],
+                "title": selected["title"],
+                "host_id": selected.get("host_id"),
+            },
             bridge_id=bridge_id,
         )
         return f"正在连接并监控“{_short_text(selected['title'], 40)}”。"
@@ -248,7 +254,10 @@ class CodexControlService:
         self.store.create_job(
             device_id,
             "get_status",
-            {"thread_id": session["selected_thread_id"]},
+            {
+                "thread_id": session["selected_thread_id"],
+                "host_id": session.get("selected_thread_host_id"),
+            },
             bridge_id=session.get("bridge_id"),
         )
         self.store.patch_session(device_id, expires_at=self._touch_expiry())
@@ -293,6 +302,7 @@ class CodexControlService:
             "send_message",
             {
                 "thread_id": session["selected_thread_id"],
+                "host_id": session.get("selected_thread_host_id"),
                 "text": instruction,
                 "mode": "steer" if steer else "start",
                 "expected_turn_id": session.get("current_turn_id"),
@@ -328,6 +338,7 @@ class CodexControlService:
             "respond_request",
             {
                 "thread_id": session["selected_thread_id"],
+                "host_id": session.get("selected_thread_host_id"),
                 "request_id": pending.get("request_id"),
                 "request_type": request_type,
                 "answer": answer,
@@ -371,7 +382,10 @@ class CodexControlService:
             self.store.create_job(
                 device_id,
                 "unmonitor_thread",
-                {"thread_id": thread_id},
+                {
+                    "thread_id": thread_id,
+                    "host_id": session.get("selected_thread_host_id"),
+                },
                 bridge_id=session.get("bridge_id"),
             )
         self.store.patch_session(
@@ -379,6 +393,7 @@ class CodexControlService:
             stage="awaiting_selection",
             selected_thread_id=None,
             selected_thread_title=None,
+            selected_thread_host_id=None,
             task_status="unknown",
             task_summary=None,
             current_turn_id=None,
@@ -396,7 +411,10 @@ class CodexControlService:
             self.store.create_job(
                 device_id,
                 "unmonitor_thread",
-                {"thread_id": thread_id},
+                {
+                    "thread_id": thread_id,
+                    "host_id": session.get("selected_thread_host_id"),
+                },
                 bridge_id=session.get("bridge_id"),
             )
         self.store.patch_session(
@@ -405,6 +423,7 @@ class CodexControlService:
             stage="inactive",
             selected_thread_id=None,
             selected_thread_title=None,
+            selected_thread_host_id=None,
             pending_request=None,
             announcements_enabled=False,
             next_announcement_at=None,
@@ -474,6 +493,7 @@ class CodexControlService:
                             "title": title,
                             "status": _normalize_status(item.get("status")),
                             "updated_at": item.get("updated_at"),
+                            "host_id": _short_text(item.get("host_id"), 128) or None,
                         }
                     )
             if not threads:

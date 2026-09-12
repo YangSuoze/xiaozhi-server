@@ -54,6 +54,7 @@ def test_voice_session_discovers_selects_and_queues_busy_instruction(tmp_path):
                     "title": "设计可爱的小智外壳",
                     "status": {"type": "notLoaded"},
                     "updated_at": 100,
+                    "host_id": "local",
                 },
                 {
                     "id": "thread-b",
@@ -71,6 +72,7 @@ def test_voice_session_discovers_selects_and_queues_busy_instruction(tmp_path):
     assert "正在连接并监控" in service.select_task("speaker-1", "第一个")
     monitor_job = store.lease_job("mac-home", 60)
     assert monitor_job["kind"] == "monitor_thread"
+    assert monitor_job["payload"]["host_id"] == "local"
     complete(
         service,
         "mac-home",
@@ -93,6 +95,7 @@ def test_voice_session_discovers_selects_and_queues_busy_instruction(tmp_path):
     instruction_job = store.lease_job("mac-home", 60)
     assert instruction_job["kind"] == "send_message"
     assert instruction_job["payload"]["text"] == "把卡扣间隙改成0.3毫米"
+    assert instruction_job["payload"]["host_id"] == "local"
 
 
 def test_pending_user_input_is_answered_instead_of_starting_new_turn(tmp_path):
