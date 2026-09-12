@@ -114,4 +114,10 @@ def codex_control(
         interval_minutes=interval_minutes,
         delivery_mode=delivery_mode,
     )
+    session = service.store.get_session(device_id)
+    conn.codex_mode_expires_at = (
+        session.get("expires_at") if session.get("active") else None
+    )
+    if session.get("active"):
+        conn.close_after_chat = False
     return ActionResponse(Action.RESPONSE, response=response)

@@ -149,6 +149,7 @@ class ConnectionHandler:
 
         # 是否在聊天结束后关闭连接
         self.close_after_chat = False
+        self.codex_mode_expires_at = None
         self.load_function_plugin = False
         self.intent_type = "nointent"
 
