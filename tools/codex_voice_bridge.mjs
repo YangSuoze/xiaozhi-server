@@ -2,16 +2,18 @@
 /** Bridge Xiaozhi voice jobs to tasks owned by the Codex desktop app. */
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { hostname } from "node:os";
+import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { homedir, hostname } from "node:os";
+import { join, resolve, sep } from "node:path";
 import net from "node:net";
 import process from "node:process";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.1.0";
+const VERSION = "2.1.1";
 const APP_TOOLS_PIPE = "CODEX_APP_TOOLS_PIPE_PATH";
 const DEFAULT_CODEX = "/Applications/ChatGPT.app/Contents/Resources/codex";
+const MAX_ROLLOUT_READ_BYTES = 2 * 1024 * 1024;
 
 function log(level, message, error = null) {
   const detail = error instanceof Error ? `: ${error.message}` : "";
@@ -146,7 +148,7 @@ export function buildProgressSnapshot(poll, fallbackStatus = "unknown") {
       180,
     );
     nextStep = cleanProgressText(
-      matchingSentence(cleaned, /下一步|接下来|随后|之后会|准备/u),
+      matchingSentence(cleaned, /下一步|接下来|随后|之后会|准备|我会|将会|会继续/u),
       160,
     );
     const activeSentence =
@@ -164,6 +166,9 @@ export function buildProgressSnapshot(poll, fallbackStatus = "unknown") {
   } else if (status === "active") {
     currentAction = toolActivity(poll.latestToolMarker);
   }
+  if (!recentResult && poll.previousAssistantMessage?.phase === "final_answer") {
+    recentResult = cleanProgressText(poll.previousAssistantMessage.text, 180);
+  }
 
   const revisionSource =
     message?.id ??
@@ -180,6 +185,117 @@ export function buildProgressSnapshot(poll, fallbackStatus = "unknown") {
     source_message_id: message?.id ?? null,
     updated_at: Date.now() / 1000,
   };
+}
+
+function rolloutMessage(item, turnId) {
+  if (item?.type !== "AgentMessage") return null;
+  const text = (item.content ?? [])
+    .filter((content) => content.type === "Text")
+    .map((content) => content.text)
+    .join("\n");
+  if (!text) return null;
+  return { id: item.id, turnId, phase: item.phase, text };
+}
+
+function rolloutMarker(item, turnId) {
+  const mapping = {
+    CommandExecution: "commandExecution",
+    FileChange: "fileChange",
+    McpToolCall: "mcpToolCall",
+    ImageView: "imageView",
+    SubAgentActivity: "subAgentActivity",
+  };
+  const type = mapping[item?.type];
+  return type ? { id: item.id, turnId, type, status: item.status } : null;
+}
+
+export class RolloutProgressReader {
+  constructor(root = join(homedir(), ".codex", "sessions")) {
+    this.root = resolve(root);
+    this.states = new Map();
+  }
+
+  snapshot(threadId, filePath, currentTurnId) {
+    if (!filePath) return {};
+    const path = resolve(filePath);
+    if (!path.startsWith(`${this.root}${sep}`)) return {};
+    let size;
+    try {
+      size = statSync(path).size;
+    } catch {
+      return {};
+    }
+
+    let state = this.states.get(threadId);
+    if (!state || state.path !== path || state.offset > size) {
+      state = {
+        path,
+        offset: Math.max(0, size - MAX_ROLLOUT_READ_BYTES),
+        remainder: "",
+        messages: new Map(),
+        markers: new Map(),
+        latestFinal: null,
+        discardPrefix: size > MAX_ROLLOUT_READ_BYTES,
+      };
+      this.states.set(threadId, state);
+    }
+    if (state.offset < size) {
+      let length = size - state.offset;
+      if (length > MAX_ROLLOUT_READ_BYTES) {
+        state.offset = size - MAX_ROLLOUT_READ_BYTES;
+        state.remainder = "";
+        state.discardPrefix = true;
+        length = MAX_ROLLOUT_READ_BYTES;
+      }
+      const buffer = Buffer.alloc(length);
+      const descriptor = openSync(path, "r");
+      try {
+        readSync(descriptor, buffer, 0, length, state.offset);
+      } finally {
+        closeSync(descriptor);
+      }
+      let chunk = buffer.toString("utf8");
+      if (state.discardPrefix) {
+        const newline = chunk.indexOf("\n");
+        chunk = newline < 0 ? "" : chunk.slice(newline + 1);
+        state.discardPrefix = false;
+      }
+      const lines = `${state.remainder}${chunk}`.split("\n");
+      state.remainder = lines.pop() ?? "";
+      for (const line of lines) this.consumeLine(state, line);
+      state.offset = size;
+    }
+    return {
+      latestAssistantMessage: state.messages.get(currentTurnId) ?? null,
+      latestToolMarker: state.markers.get(currentTurnId) ?? null,
+      previousAssistantMessage:
+        state.latestFinal?.turnId === currentTurnId ? null : state.latestFinal,
+    };
+  }
+
+  consumeLine(state, line) {
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      return;
+    }
+    const payload = record?.type === "event_msg" ? record.payload : null;
+    if (payload?.type !== "item_completed") return;
+    const turnId = payload.turn_id;
+    const message = rolloutMessage(payload.item, turnId);
+    if (message) {
+      state.messages.set(turnId, message);
+      if (message.phase === "final_answer") state.latestFinal = message;
+      while (state.messages.size > 8) state.messages.delete(state.messages.keys().next().value);
+      return;
+    }
+    const marker = rolloutMarker(payload.item, turnId);
+    if (marker) {
+      state.markers.set(turnId, marker);
+      while (state.markers.size > 8) state.markers.delete(state.markers.keys().next().value);
+    }
+  }
 }
 
 function pollFromThreadRead(result) {
@@ -263,6 +379,7 @@ class CloudClient {
       version: VERSION,
       capabilities: {
         desktop_app_tools: true,
+        local_rollout_progress: true,
         task_monitoring: true,
         progress_snapshots: true,
       },
@@ -489,6 +606,8 @@ class VoiceBridge {
     this.cloud = new CloudClient(options);
     this.catalog = new JsonLineClient(options.codexBin);
     this.appTools = new NativeAppToolsClient(process.env[APP_TOOLS_PIPE]);
+    this.rolloutPaths = new Map();
+    this.rolloutReader = new RolloutProgressReader();
     this.monitored = new Map();
     this.cachedTasks = null;
     this.cacheTime = 0;
@@ -497,6 +616,10 @@ class VoiceBridge {
 
   async callerThreadId(excludedThreadId = null) {
     const threads = await this.catalog.recentLocalThreads(20);
+    for (const thread of threads) {
+      const id = thread.id ?? thread.sessionId;
+      if (id && thread.path) this.rolloutPaths.set(id, thread.path);
+    }
     const selected =
       threads.find((item) => (item.id ?? item.sessionId) !== excludedThreadId) ?? threads[0];
     const id = selected?.id ?? selected?.sessionId;
@@ -557,6 +680,16 @@ class VoiceBridge {
       };
       if (hostId) argumentsValue.hostId = hostId;
       poll = pollFromThreadRead(await this.appTools.call("read_thread", argumentsValue, caller));
+    }
+    const rollout = this.rolloutReader.snapshot(
+      threadId,
+      this.rolloutPaths.get(threadId),
+      poll?.latestTurn?.id,
+    );
+    if (poll) {
+      poll.latestAssistantMessage ??= rollout.latestAssistantMessage;
+      poll.latestToolMarker ??= rollout.latestToolMarker;
+      poll.previousAssistantMessage ??= rollout.previousAssistantMessage;
     }
     if (!poll) return { ...(await this.taskStatus(threadId, hostId)), progress: previousProgress, cursor };
     const status = normalizedStatus(poll.thread?.status);

@@ -48,3 +48,48 @@ process.stdout.write(JSON.stringify({{ progress, completedOnly }}));
     assert "/Users/" not in result.stdout
     assert "abcdefghijklmnopqrstuvwxyz" not in result.stdout
     assert parsed["completedOnly"]["current_action"] is None
+
+
+def test_bridge_reads_live_commentary_from_local_rollout(tmp_path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is unavailable")
+    rollout = tmp_path / "rollout.jsonl"
+    rollout.write_text(
+        json.dumps(
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "turn_id": "turn-live",
+                    "item": {
+                        "type": "AgentMessage",
+                        "id": "message-live",
+                        "phase": "commentary",
+                        "content": [
+                            {"type": "Text", "text": "正在检查云端服务启动状态。"}
+                        ],
+                    },
+                },
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    script = f"""
+import {{ RolloutProgressReader }} from {json.dumps(BRIDGE_PATH.as_uri())};
+const reader = new RolloutProgressReader({json.dumps(str(tmp_path))});
+process.stdout.write(JSON.stringify(reader.snapshot(
+  "thread-live", {json.dumps(str(rollout))}, "turn-live"
+)));
+"""
+    result = subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    snapshot = json.loads(result.stdout)
+    assert snapshot["latestAssistantMessage"]["id"] == "message-live"
+    assert "检查云端服务" in snapshot["latestAssistantMessage"]["text"]
