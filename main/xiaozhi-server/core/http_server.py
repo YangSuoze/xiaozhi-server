@@ -3,6 +3,8 @@ from aiohttp import web
 from config.logger import setup_logging
 from core.api.ota_handler import OTAHandler
 from core.api.vision_handler import VisionHandler
+from core.api.codex_bridge_handler import CodexBridgeHandler
+from core.codex import get_codex_control_service
 
 TAG = __name__
 
@@ -13,6 +15,8 @@ class SimpleHttpServer:
         self.logger = setup_logging()
         self.ota_handler = OTAHandler(config)
         self.vision_handler = VisionHandler(config)
+        self.codex_service = get_codex_control_service(config)
+        self.codex_bridge_handler = CodexBridgeHandler(self.codex_service)
 
     def _get_websocket_url(self, local_ip: str, port: int) -> str:
         """获取websocket地址
@@ -74,6 +78,32 @@ class SimpleHttpServer:
                         ),
                     ]
                 )
+
+                if self.codex_service.enabled:
+                    app.add_routes(
+                        [
+                            web.get(
+                                "/codex/bridge/v1/health",
+                                self.codex_bridge_handler.health,
+                            ),
+                            web.post(
+                                "/codex/bridge/v1/heartbeat",
+                                self.codex_bridge_handler.heartbeat,
+                            ),
+                            web.post(
+                                "/codex/bridge/v1/jobs/lease",
+                                self.codex_bridge_handler.lease_job,
+                            ),
+                            web.post(
+                                "/codex/bridge/v1/jobs/complete",
+                                self.codex_bridge_handler.complete_job,
+                            ),
+                            web.post(
+                                "/codex/bridge/v1/events",
+                                self.codex_bridge_handler.post_event,
+                            ),
+                        ]
+                    )
 
                 # 运行服务
                 runner = web.AppRunner(app)

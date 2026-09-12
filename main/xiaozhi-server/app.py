@@ -10,6 +10,7 @@ from core.http_server import SimpleHttpServer
 from core.websocket_server import WebSocketServer
 from core.utils.util import check_ffmpeg_installed
 from core.utils.gc_manager import get_gc_manager
+from core.codex import get_codex_control_service
 try:
     from plugins_func.functions.alarm_clock import alarm_manager
 except ImportError:
@@ -63,6 +64,7 @@ async def main():
             auth_key = str(uuid.uuid4().hex)
     
     config["server"]["auth_key"] = auth_key
+    codex_service = get_codex_control_service(config)
 
     # 添加 stdin 监控任务
     stdin_task = asyncio.create_task(monitor_stdin())
@@ -82,6 +84,7 @@ async def main():
         loop = asyncio.get_running_loop()
         alarm_manager.start(loop)
         logger.bind(tag=TAG).info("全局闹铃管理器已启动")
+    codex_service.start(asyncio.get_running_loop())
     # 启动 Simple http 服务器
     ota_server = SimpleHttpServer(config)
     ota_task = asyncio.create_task(ota_server.start())
@@ -140,6 +143,7 @@ async def main():
     finally:
         if alarm_manager:
             await alarm_manager.stop()
+        await codex_service.stop()
 
         # 停止全局GC管理器
         await gc_manager.stop()

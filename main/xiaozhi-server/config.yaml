@@ -123,6 +123,20 @@ wakeup_words:
 # 详细教程 https://github.com/xinnan-tech/xiaozhi-esp32-server/blob/main/docs/mcp-endpoint-integration.md
 mcp_endpoint: 你的接入点 websocket地址
 
+# Codex 桌面语音桥接。生产配置写入 data/.config.yaml，桥接程序应通过
+# HTTPS 或 SSH 本地转发访问，避免在公网明文传输密钥和用户指令。
+codex_bridge:
+  enabled: false
+  token: "请替换为随机生成的长密钥"
+  database_path: data/codex_bridge.db
+  bridge_offline_seconds: 45
+  job_lease_seconds: 60
+  session_ttl_minutes: 30
+  recent_task_limit: 3
+  default_announcement_interval_minutes: 5
+  max_instruction_chars: 4000
+  retention_hours: 72
+
 # 上下文源配置
 # 用于在系统提示词中注入动态数据，如健康数据、股票信息等
 # 可以添加多个上下文源
@@ -133,6 +147,9 @@ context_providers:
 
 # 插件的基础配置
 plugins:
+  # 电脑端 Codex 语音桥接。密钥只写在 data/.config.yaml 中。
+  codex_control:
+    description: "通过语音选择、监控和控制电脑上的Codex桌面任务"
   # 获取天气插件的配置，这里填写你的api_key
   # 这个密钥是项目共用的key，用多了可能会被限制
   # 想稳定一点就自行申请替换，每天有1000次免费调用
@@ -262,6 +279,7 @@ Intent:
     # 系统默认已经记载"handle_exit_intent(退出识别)"、"play_music(音乐播放)"插件，请勿重复加载
     # 下面是加载查天气、角色切换、加载查新闻的插件示例
     functions:
+      - codex_control
       - get_weather
       - get_news_from_newsnow
       - play_music
@@ -272,6 +290,7 @@ Intent:
     # 系统默认已经记载"handle_exit_intent(退出识别)"、"play_music(音乐播放)"插件，请勿重复加载
     # 下面是加载查天气、角色切换、加载查新闻的插件示例
     functions:
+      - codex_control
       - change_role
       - get_weather
       # - search_from_ragflow

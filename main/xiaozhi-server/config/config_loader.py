@@ -86,6 +86,9 @@ async def get_config_from_api_async(config):
         ):
             if key in local_server:
                 remote_server[key] = local_server[key]
+    # Codex 桥接包含本机路径与私有令牌，只允许由服务器本地配置覆盖。
+    if config.get("codex_bridge"):
+        config_data["codex_bridge"] = config["codex_bridge"]
     # 如果服务器没有prompt_template，则从本地配置读取
     if not config_data.get("prompt_template"):
         config_data["prompt_template"] = config.get("prompt_template")
