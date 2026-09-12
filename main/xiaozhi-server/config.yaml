@@ -38,6 +38,9 @@ server:
     # 每台设备的预置密钥。只写在 data/.config.yaml，并通过 HTTPS/WSS 传输。
     device_secrets:
       "11:22:33:44:55:66": "请替换为随机生成的设备密钥"
+    # 仅用于迁移尚未发送 X-Device-Secret 的旧固件。设备仍需位于
+    # allowed_devices，且 WebSocket 仍校验服务端签发的 token；升级后请移除。
+    legacy_ota_devices: []
  # MQTT网关配置，用于通过OTA下发到设备，根据mqtt_gateway的.env文件配置，格式为host:port
   mqtt_gateway: null
   # MQTT签名密钥，用于生成MQTT连接密码，根据mqtt_gateway的.env文件配置

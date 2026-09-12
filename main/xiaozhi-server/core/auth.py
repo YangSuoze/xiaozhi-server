@@ -27,6 +27,32 @@ def verify_device_secret(
     return hmac.compare_digest(str(supplied_secret), str(expected_secret))
 
 
+def allow_legacy_ota_without_secret(
+    device_id: str,
+    supplied_secret: str,
+    allowed_devices,
+    legacy_ota_devices,
+) -> bool:
+    """Allow an explicitly listed old device to obtain a signed connection token.
+
+    This migration path applies only when the old firmware sends no secret at all.
+    A wrong secret is still rejected so stale or misconfigured credentials are visible.
+    """
+    normalized_id = normalize_device_id(device_id)
+    normalized_allowed = {
+        normalize_device_id(item) for item in allowed_devices if item
+    }
+    normalized_legacy = {
+        normalize_device_id(item) for item in legacy_ota_devices if item
+    }
+    return (
+        bool(normalized_id)
+        and not supplied_secret
+        and normalized_id in normalized_allowed
+        and normalized_id in normalized_legacy
+    )
+
+
 class AuthenticationError(Exception):
     """认证异常"""
 

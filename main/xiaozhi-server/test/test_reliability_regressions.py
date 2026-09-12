@@ -258,6 +258,26 @@ class AuthenticationTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_legacy_ota_migration_only_accepts_missing_secret_for_listed_device(self):
+        allowed = {"b8:f8:62:e7:90:b4"}
+        legacy = {"b8:f8:62:e7:90:b4"}
+
+        self.assertTrue(
+            auth_module.allow_legacy_ota_without_secret(
+                "B8:F8:62:E7:90:B4", "", allowed, legacy
+            )
+        )
+        self.assertFalse(
+            auth_module.allow_legacy_ota_without_secret(
+                "B8:F8:62:E7:90:B4", "wrong", allowed, legacy
+            )
+        )
+        self.assertFalse(
+            auth_module.allow_legacy_ota_without_secret(
+                "00:00:00:00:00:00", "", allowed, legacy
+            )
+        )
+
     @classmethod
     def setUpClass(cls):
         websockets_module = types.ModuleType("websockets")

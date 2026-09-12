@@ -9,7 +9,12 @@ import glob
 from typing import Dict, List, Tuple
 from aiohttp import web
 
-from core.auth import AuthManager, normalize_device_id, verify_device_secret
+from core.auth import (
+    AuthManager,
+    allow_legacy_ota_without_secret,
+    normalize_device_id,
+    verify_device_secret,
+)
 from core.utils.util import filter_sensitive_info, get_local_ip, get_vision_url
 from core.api.base_handler import BaseHandler
 
@@ -58,6 +63,11 @@ class OTAHandler(BaseHandler):
             normalize_device_id(device_id): str(secret)
             for device_id, secret in auth_config.get("device_secrets", {}).items()
             if device_id and secret and "请替换" not in str(secret)
+        }
+        self.legacy_ota_devices = {
+            normalize_device_id(device_id)
+            for device_id in auth_config.get("legacy_ota_devices", [])
+            if device_id
         }
         secret_key = config["server"]["auth_key"]
         expire_seconds = auth_config.get("expire_seconds")
@@ -179,12 +189,19 @@ class OTAHandler(BaseHandler):
                 raise Exception("OTA请求ClientID为空")
 
             supplied_device_secret = request.headers.get("x-device-secret", "")
-            if self.auth_enable and not verify_device_secret(
+            secret_is_valid = verify_device_secret(
                 device_id,
                 supplied_device_secret,
                 self.allowed_devices,
                 self.device_secrets,
-            ):
+            )
+            legacy_device_is_allowed = allow_legacy_ota_without_secret(
+                device_id,
+                supplied_device_secret,
+                self.allowed_devices,
+                self.legacy_ota_devices,
+            )
+            if self.auth_enable and not secret_is_valid and not legacy_device_is_allowed:
                 normalized_device_id = normalize_device_id(device_id)
                 self.logger.bind(tag=TAG).warning(
                     "OTA鉴权失败: device_id={}, known_device={}, "
@@ -203,6 +220,11 @@ class OTAHandler(BaseHandler):
                     content_type="application/json",
                 )
                 return response
+            if self.auth_enable and legacy_device_is_allowed:
+                self.logger.bind(tag=TAG).warning(
+                    "旧固件设备 {} 未携带预置密钥，已通过迁移白名单签发临时连接令牌",
+                    normalize_device_id(device_id),
+                )
 
             data_json = {}
             try:
