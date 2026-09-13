@@ -15,6 +15,9 @@ CODEX_CONTROL_DESC = {
             "用户问之前做过什么、还剩什么、遇到过什么问题时使用ask_task；只问当前"
             "状态或当前步骤时使用status。进入模式后用户说‘第一个’等"
             "序号是在选择任务；选中任务后的普通工作要求使用send_instruction。"
+            "send_instruction和respond只生成待确认草稿；小智复述后，用户确认时使用"
+            "confirm_send，纠正内容时使用edit_send，取消时使用cancel_send。已有草稿时，"
+            "用户说确认、是的、对、没错或就这样发，都表示confirm_send。"
         ),
         "parameters": {
             "type": "object",
@@ -28,6 +31,9 @@ CODEX_CONTROL_DESC = {
                         "select_task",
                         "send_instruction",
                         "respond",
+                        "confirm_send",
+                        "edit_send",
+                        "cancel_send",
                         "status",
                         "ask_task",
                         "set_announcements",
@@ -40,7 +46,8 @@ CODEX_CONTROL_DESC = {
                     "type": "string",
                     "description": (
                         "选择任务时传用户说的序号或名称；发送指令、回答Codex问题、"
-                        "询问任务历史时传完整原话。其他动作不需要。"
+                        "询问任务历史时传完整原话；edit_send传修改后的完整内容。"
+                        "其他动作不需要。"
                     ),
                 },
                 "enabled": {
@@ -77,6 +84,12 @@ CODEX_CONTROL_DESC = {
                     "text": "检查服务器日志",
                 },
             },
+            {"user_query": "确认发送", "answer": {"action": "confirm_send"}},
+            {
+                "user_query": "不对，修改为检查登录日志",
+                "answer": {"action": "edit_send", "text": "检查登录日志"},
+            },
+            {"user_query": "取消发送", "answer": {"action": "cancel_send"}},
             {"user_query": "Codex现在做到哪一步了", "answer": {"action": "status"}},
             {
                 "user_query": "这个任务之前做了什么，还有什么没解决？",

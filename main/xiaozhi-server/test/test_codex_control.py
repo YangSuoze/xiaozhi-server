@@ -95,7 +95,14 @@ def test_voice_session_discovers_selects_and_queues_busy_instruction(tmp_path):
     )
 
     response = service.send_instruction("speaker-1", "把卡扣间隙改成0.3毫米")
-    assert "已经排队" in response
+    assert "确认发送" in response
+    assert store.get_session("speaker-1")["pending_send"]["text"] == (
+        "把卡扣间隙改成0.3毫米"
+    )
+    assert store.lease_job("mac-home", 60) is None
+
+    response = service.confirm_send("speaker-1")
+    assert "本轮完成后发送" in response
     assert store.lease_job("mac-home", 60) is None
 
     service.handle_bridge_event(
@@ -136,7 +143,9 @@ def test_pending_user_input_is_answered_instead_of_starting_new_turn(tmp_path):
         }
     )
 
-    assert "回答发送" in service.send_instruction("speaker-1", "使用0.3毫米")
+    assert "确认发送" in service.send_instruction("speaker-1", "使用0.3毫米")
+    assert store.lease_job("mac-home", 60) is None
+    assert "确认后的回答" in service.confirm_send("speaker-1")
     job = store.lease_job("mac-home", 60)
     assert job["kind"] == "respond_request"
     assert job["payload"]["request_id"] == 27
@@ -162,9 +171,11 @@ def test_approval_requires_explicit_decision(tmp_path):
     unclear = service.send_instruction("speaker-1", "你看着办")
     assert "明确说批准或者拒绝" in unclear
     assert store.get_session("speaker-1")["pending_request"] is not None
+    assert store.get_session("speaker-1")["pending_send"] is None
 
     denied = service.send_instruction("speaker-1", "不允许")
-    assert "回答发送" in denied
+    assert "确认发送" in denied
+    assert "确认后的回答" in service.confirm_send("speaker-1")
     denied_job = store.lease_job("mac-home", 60)
     assert denied_job["payload"]["approved"] is False
 
@@ -174,9 +185,58 @@ def test_approval_requires_explicit_decision(tmp_path):
     )
 
     accepted = service.send_instruction("speaker-1", "批准")
-    assert "回答发送" in accepted
+    assert "确认发送" in accepted
+    assert "确认后的回答" in service.confirm_send("speaker-1")
     job = store.lease_job("mac-home", 60)
     assert job["payload"]["approved"] is True
+
+
+def test_pending_send_can_be_edited_or_cancelled_before_delivery(tmp_path):
+    service = make_service(tmp_path)
+    store = service.store
+    store.patch_session(
+        "speaker-1",
+        active=True,
+        bridge_id="mac-home",
+        selected_thread_id="thread-a",
+        selected_thread_title="服务器",
+        task_status="idle",
+    )
+
+    response = service.send_instruction("speaker-1", "检查数据日志")
+    assert "我听到的是：检查数据日志" in response
+    response = service.edit_send("speaker-1", "不对，修改为检查登录日志")
+    assert "已修改为：检查登录日志" in response
+    assert store.get_session("speaker-1")["pending_send"]["text"] == "检查登录日志"
+    assert store.lease_job("mac-home", 60) is None
+
+    response = service.cancel_send("speaker-1")
+    assert "不会发送" in response
+    assert store.get_session("speaker-1")["pending_send"] is None
+    assert store.lease_job("mac-home", 60) is None
+
+
+def test_confirm_send_delivers_corrected_instruction(tmp_path):
+    service = make_service(tmp_path)
+    store = service.store
+    store.patch_session(
+        "speaker-1",
+        active=True,
+        bridge_id="mac-home",
+        selected_thread_id="thread-a",
+        selected_thread_title="服务器",
+        task_status="idle",
+    )
+    service.send_instruction("speaker-1", "检查数据日志")
+    service.edit_send("speaker-1", "检查登录日志")
+
+    response = service.handle_action("speaker-1", "confirm_send")
+
+    assert "已确认" in response
+    job = store.lease_job("mac-home", 60)
+    assert job["kind"] == "send_message"
+    assert job["payload"]["text"] == "检查登录日志"
+    assert store.get_session("speaker-1")["pending_send"] is None
 
 
 def test_expired_lease_is_retried(tmp_path):

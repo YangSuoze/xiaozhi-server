@@ -218,6 +218,7 @@ class CodexControlService:
             task_progress=None,
             current_turn_id=None,
             pending_request=None,
+            pending_send=None,
             announcements_enabled=False,
             next_announcement_at=None,
             last_announced_progress_revision=None,
@@ -298,6 +299,7 @@ class CodexControlService:
             task_status=_normalize_status(selected.get("status")),
             task_progress=None,
             pending_request=None,
+            pending_send=None,
             expires_at=self._touch_expiry(),
         )
         self.store.create_job(
@@ -395,16 +397,126 @@ class CodexControlService:
         if not instruction:
             return "没有识别到要发送的指令，请再说一次。"
 
+        if session.get("pending_send"):
+            normalized = instruction.rstrip("。！!？? ")
+            if normalized in {"确认", "确认发送", "发送", "可以发送", "是的", "对"}:
+                return self.confirm_send(device_id)
+            if normalized in {"取消", "取消发送", "不发送", "不要发送", "算了"}:
+                return self.cancel_send(device_id)
+
         pending = session.get("pending_request")
         if pending:
             if pending.get("answering"):
                 return "你的回答正在发送，请稍等电脑确认。"
-            return self._answer_pending_request(
-                device_id, session, pending, instruction
-            )
+            approved = self._approval_decision(pending, instruction)
+            if pending.get("request_type") == "approval" and approved is None:
+                return "Codex正在等待操作确认，请明确说批准或者拒绝。"
+            draft = {
+                "kind": "respond_request",
+                "text": instruction,
+                "request_id": pending.get("request_id"),
+                "request_type": pending.get("request_type"),
+                "approved": approved,
+            }
+        else:
+            draft = {
+                "kind": "send_message",
+                "text": instruction,
+                "delivery_mode": (
+                    "steer" if delivery_mode == "steer" else "after_current"
+                ),
+            }
+
+        replacing = bool(session.get("pending_send"))
+        self.store.patch_session(
+            device_id,
+            pending_send=draft,
+            expires_at=self._touch_expiry(),
+        )
+        prefix = "已修改为" if replacing else "我听到的是"
+        preview = _short_text(instruction, 300).rstrip("。！？!? ")
+        return (
+            f"{prefix}：{preview}。"
+            "请说确认发送；如果不对，可以说修改为，再说完整内容，或者取消发送。"
+        )
+
+    @staticmethod
+    def _approval_decision(pending: dict[str, Any], answer: str) -> bool | None:
+        if pending.get("request_type") != "approval":
+            return None
+        if any(word in answer for word in ("拒绝", "不同意", "取消", "不允许", "不要")):
+            return False
+        if any(word in answer for word in ("同意", "允许", "批准", "确认")):
+            return True
+        return None
+
+    def edit_send(self, device_id: str, text: str) -> str:
+        session = self.store.get_session(device_id)
+        if not session.get("pending_send"):
+            return "当前没有等待确认的指令。请先告诉我要发送什么。"
+        corrected = re.sub(r"^(?:不对[，,。]?\s*)?(?:修改|改)(?:为|成)\s*", "", text)
+        if not corrected.strip():
+            return "请在修改为后面说出完整的新内容。"
+        corrected = _short_text(
+            corrected, int(self.settings.get("max_instruction_chars", 4000))
+        )
+        draft = dict(session["pending_send"])
+        if draft.get("request_type") == "approval":
+            approved = self._approval_decision(draft, corrected)
+            if approved is None:
+                return "这是操作确认，请把内容修改为批准或者拒绝。"
+            draft["approved"] = approved
+        draft["text"] = corrected
+        self.store.patch_session(
+            device_id,
+            pending_send=draft,
+            expires_at=self._touch_expiry(),
+        )
+        preview = _short_text(corrected, 300).rstrip("。！？!? ")
+        return (
+            f"已修改为：{preview}。"
+            "请说确认发送；如果仍然不对，可以继续修改或者取消发送。"
+        )
+
+    def cancel_send(self, device_id: str) -> str:
+        session = self.store.get_session(device_id)
+        if not session.get("pending_send"):
+            return "当前没有等待确认的指令。"
+        self.store.patch_session(
+            device_id,
+            pending_send=None,
+            expires_at=self._touch_expiry(),
+        )
+        return "已取消，这条内容不会发送给Codex。"
+
+    def confirm_send(self, device_id: str) -> str:
+        session = self.store.get_session(device_id)
+        draft = session.get("pending_send")
+        if not draft:
+            return "当前没有等待确认的指令。请先告诉我要发送什么。"
+        if not session.get("active") or not session.get("selected_thread_id"):
+            self.store.patch_session(device_id, pending_send=None)
+            return "当前没有选择Codex任务，这条内容没有发送。"
+
+        if draft.get("kind") == "respond_request":
+            pending = session.get("pending_request") or {}
+            if (
+                pending.get("answering")
+                or pending.get("request_id") != draft.get("request_id")
+                or pending.get("request_type") != draft.get("request_type")
+            ):
+                self.store.patch_session(device_id, pending_send=None)
+                return "Codex等待的问题已经变化，这条回答没有发送，请重新回答。"
+            self._queue_pending_response(device_id, session, pending, draft)
+            self.store.patch_session(device_id, pending_send=None)
+            return "正在把确认后的回答发送给Codex。"
+
+        if draft.get("kind") != "send_message":
+            self.store.patch_session(device_id, pending_send=None)
+            return "这条待发送内容已经失效，请重新说一次。"
 
         status = _normalize_status(session.get("task_status"))
-        steer = delivery_mode == "steer"
+        steer = draft.get("delivery_mode") == "steer"
         blocked = (
             status
             in {
@@ -420,36 +532,29 @@ class CodexControlService:
             {
                 "thread_id": session["selected_thread_id"],
                 "host_id": session.get("selected_thread_host_id"),
-                "text": instruction,
+                "text": draft["text"],
                 "mode": "steer" if steer else "start",
                 "expected_turn_id": session.get("current_turn_id"),
             },
             bridge_id=session.get("bridge_id"),
             blocked=blocked,
         )
-        self.store.patch_session(device_id, expires_at=self._touch_expiry())
+        self.store.patch_session(
+            device_id,
+            pending_send=None,
+            expires_at=self._touch_expiry(),
+        )
         if blocked:
-            return "Codex当前正在工作，指令已经排队，会在本轮完成后发送。"
-        return "正在把指令发送给Codex。电脑确认接收后我会告诉你。"
+            return "已确认。Codex当前正在工作，指令会在本轮完成后发送。"
+        return "已确认，正在把指令发送给Codex。电脑接收后我会告诉你。"
 
-    def _answer_pending_request(
+    def _queue_pending_response(
         self,
         device_id: str,
         session: dict[str, Any],
         pending: dict[str, Any],
-        answer: str,
-    ) -> str:
-        request_type = pending.get("request_type")
-        approved = None
-        if request_type == "approval":
-            if any(
-                word in answer for word in ("拒绝", "不同意", "取消", "不允许", "不要")
-            ):
-                approved = False
-            elif any(word in answer for word in ("同意", "允许", "批准", "确认")):
-                approved = True
-            else:
-                return "Codex正在等待操作确认，请明确说批准或者拒绝。"
+        draft: dict[str, Any],
+    ) -> None:
         self.store.create_job(
             device_id,
             "respond_request",
@@ -457,9 +562,9 @@ class CodexControlService:
                 "thread_id": session["selected_thread_id"],
                 "host_id": session.get("selected_thread_host_id"),
                 "request_id": pending.get("request_id"),
-                "request_type": request_type,
-                "answer": answer,
-                "approved": approved,
+                "request_type": pending.get("request_type"),
+                "answer": draft["text"],
+                "approved": draft.get("approved"),
             },
             bridge_id=session.get("bridge_id"),
         )
@@ -468,7 +573,6 @@ class CodexControlService:
         self.store.patch_session(
             device_id, pending_request=pending, expires_at=self._touch_expiry()
         )
-        return "正在把你的回答发送给Codex。"
 
     def set_announcements(
         self, device_id: str, enabled: bool, interval_minutes: int | None = None
@@ -515,6 +619,7 @@ class CodexControlService:
             task_progress=None,
             current_turn_id=None,
             pending_request=None,
+            pending_send=None,
             announcements_enabled=False,
             next_announcement_at=None,
             expires_at=self._touch_expiry(),
@@ -544,6 +649,7 @@ class CodexControlService:
             task_status="unknown",
             task_progress=None,
             pending_request=None,
+            pending_send=None,
             announcements_enabled=False,
             next_announcement_at=None,
             expires_at=None,
@@ -571,6 +677,9 @@ class CodexControlService:
             "respond": lambda: self.send_instruction(
                 device_id, text or "", delivery_mode
             ),
+            "confirm_send": lambda: self.confirm_send(device_id),
+            "edit_send": lambda: self.edit_send(device_id, text or ""),
+            "cancel_send": lambda: self.cancel_send(device_id),
             "status": lambda: self.get_status(device_id),
             "ask_task": lambda: self.ask_task(device_id, text or "", llm),
             "set_announcements": lambda: self.set_announcements(

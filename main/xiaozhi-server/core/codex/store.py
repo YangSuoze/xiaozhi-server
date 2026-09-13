@@ -26,6 +26,7 @@ SESSION_DEFAULTS = {
     "task_progress": None,
     "current_turn_id": None,
     "pending_request": None,
+    "pending_send": None,
     "announcements_enabled": 0,
     "announcement_interval": 300,
     "next_announcement_at": None,
@@ -82,6 +83,7 @@ class CodexStore:
         item["pending_request"] = CodexStore._loads(
             item.pop("pending_request_json", None)
         )
+        item["pending_send"] = CodexStore._loads(item.pop("pending_send_json", None))
         item["task_progress"] = CodexStore._loads(item.pop("task_progress_json", None))
         item["active"] = bool(item["active"])
         item["announcements_enabled"] = bool(item["announcements_enabled"])
@@ -114,6 +116,7 @@ class CodexStore:
                     task_progress_json TEXT,
                     current_turn_id TEXT,
                     pending_request_json TEXT,
+                    pending_send_json TEXT,
                     announcements_enabled INTEGER NOT NULL DEFAULT 0,
                     announcement_interval INTEGER NOT NULL DEFAULT 300,
                     next_announcement_at REAL,
@@ -183,6 +186,10 @@ class CodexStore:
             if "last_announced_progress_revision" not in session_columns:
                 connection.execute(
                     "ALTER TABLE sessions ADD COLUMN last_announced_progress_revision TEXT"
+                )
+            if "pending_send_json" not in session_columns:
+                connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN pending_send_json TEXT"
                 )
 
     def heartbeat(
@@ -257,7 +264,12 @@ class CodexStore:
                 encoded = {}
                 for key, value in changes.items():
                     column = key
-                    if key in {"recent_threads", "pending_request", "task_progress"}:
+                    if key in {
+                        "recent_threads",
+                        "pending_request",
+                        "pending_send",
+                        "task_progress",
+                    }:
                         column = f"{key}_json"
                         value = (
                             None
