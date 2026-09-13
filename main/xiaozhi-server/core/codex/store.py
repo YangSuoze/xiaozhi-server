@@ -34,6 +34,9 @@ SESSION_DEFAULTS = {
     "expires_at": None,
 }
 
+MAX_TASK_MEMORY_MESSAGES = 20
+MAX_TASK_MEMORY_CHARS = 30_000
+
 
 class CodexStore:
     """Small transactional repository around the bridge database."""
@@ -157,6 +160,12 @@ class CodexStore:
 
                 CREATE INDEX IF NOT EXISTS idx_codex_notifications_due
                     ON notifications(status, available_at, created_at);
+
+                CREATE TABLE IF NOT EXISTS codex_task_memories (
+                    thread_id TEXT PRIMARY KEY,
+                    recent_messages_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at REAL NOT NULL
+                );
                 """
             )
             session_columns = {
@@ -283,6 +292,91 @@ class CodexStore:
                 (thread_id,),
             ).fetchall()
         return [self._session(row) for row in rows]
+
+    def remember_task_message(
+        self, thread_id: str, message: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Keep a small, deduplicated assistant-message history for one task."""
+        message_id = str(message.get("message_id") or "").strip()[:180]
+        phase = str(message.get("phase") or "").strip()
+        text = str(message.get("text") or "").strip()[:4000]
+        if (
+            not thread_id
+            or not message_id
+            or phase
+            not in {
+                "commentary",
+                "final_answer",
+            }
+            or not text
+        ):
+            return self.get_task_memory(thread_id)
+
+        try:
+            updated_at = float(message.get("updated_at") or time.time())
+        except (TypeError, ValueError):
+            updated_at = time.time()
+        item = {
+            "message_id": message_id,
+            "phase": phase,
+            "text": text,
+            "updated_at": updated_at,
+        }
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT recent_messages_json FROM codex_task_memories WHERE thread_id=?",
+                (thread_id,),
+            ).fetchone()
+            messages = self._loads(row["recent_messages_json"] if row else None, [])
+            if not isinstance(messages, list):
+                messages = []
+            messages = [
+                current
+                for current in messages
+                if isinstance(current, dict) and current.get("message_id") != message_id
+            ]
+            messages.append(item)
+            messages = messages[-MAX_TASK_MEMORY_MESSAGES:]
+            total_chars = sum(
+                len(str(current.get("text") or "")) for current in messages
+            )
+            while messages and total_chars > MAX_TASK_MEMORY_CHARS:
+                removed = messages.pop(0)
+                total_chars -= len(str(removed.get("text") or ""))
+
+            now = time.time()
+            connection.execute(
+                """
+                INSERT INTO codex_task_memories(
+                    thread_id, recent_messages_json, updated_at
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(thread_id) DO UPDATE SET
+                    recent_messages_json=excluded.recent_messages_json,
+                    updated_at=excluded.updated_at
+                """,
+                (thread_id, json.dumps(messages, ensure_ascii=False), now),
+            )
+            connection.commit()
+            return messages
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def get_task_memory(self, thread_id: str) -> list[dict[str, Any]]:
+        if not thread_id:
+            return []
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT recent_messages_json FROM codex_task_memories WHERE thread_id=?",
+                (thread_id,),
+            ).fetchone()
+        messages = self._loads(row["recent_messages_json"] if row else None, [])
+        return messages if isinstance(messages, list) else []
 
     def create_job(
         self,

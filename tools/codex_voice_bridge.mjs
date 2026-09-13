@@ -10,7 +10,7 @@ import process from "node:process";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.1.1";
+const VERSION = "2.2.0";
 const APP_TOOLS_PIPE = "CODEX_APP_TOOLS_PIPE_PATH";
 const DEFAULT_CODEX = "/Applications/ChatGPT.app/Contents/Resources/codex";
 const MAX_ROLLOUT_READ_BYTES = 2 * 1024 * 1024;
@@ -186,6 +186,20 @@ export function buildProgressSnapshot(poll, fallbackStatus = "unknown") {
     needs_input: ["waiting_user_input", "waiting_approval"].includes(status),
     revision: limitedText(revisionSource, 180),
     source_message_id: message?.id ?? null,
+    updated_at: Date.now() / 1000,
+  };
+}
+
+export function buildTaskMemoryMessage(poll) {
+  const message = poll?.latestAssistantMessage ?? poll?.previousAssistantMessage;
+  const phase = message?.phase;
+  const messageId = limitedText(message?.id, 180);
+  const text = cleanProgressText(message?.text, 2000);
+  if (!messageId || !text || !["commentary", "final_answer"].includes(phase)) return null;
+  return {
+    message_id: messageId,
+    phase,
+    text,
     updated_at: Date.now() / 1000,
   };
 }
@@ -385,6 +399,7 @@ class CloudClient {
         local_rollout_progress: true,
         task_monitoring: true,
         progress_snapshots: true,
+        task_memory: true,
       },
     });
   }
@@ -701,6 +716,7 @@ class VoiceBridge {
       host_id: hostId ?? poll.thread?.hostId ?? null,
       turn_id: poll.latestTurn?.id ?? null,
       progress: buildProgressSnapshot(poll, status) ?? previousProgress,
+      message: buildTaskMemoryMessage(poll),
       cursor: poll.cursor ?? cursor,
     };
   }
@@ -725,11 +741,21 @@ class VoiceBridge {
         cursor: result.cursor,
         progress: result.progress,
       });
-      return { status: result.status, turn_id: result.turn_id, progress: result.progress };
+      return {
+        status: result.status,
+        turn_id: result.turn_id,
+        progress: result.progress,
+        message: result.message,
+      };
     }
     if (job.kind === "get_status") {
       const result = await this.taskSnapshot(String(payload.thread_id), payload.host_id);
-      return { status: result.status, turn_id: result.turn_id, progress: result.progress };
+      return {
+        status: result.status,
+        turn_id: result.turn_id,
+        progress: result.progress,
+        message: result.message,
+      };
     }
     if (job.kind === "send_message") return this.sendToTask(payload);
     if (job.kind === "respond_request") {
@@ -780,6 +806,7 @@ class VoiceBridge {
         status: snapshot.status,
         turn_id: snapshot.turn_id,
         progress: snapshot.progress,
+        message: snapshot.message,
       });
     }
   }

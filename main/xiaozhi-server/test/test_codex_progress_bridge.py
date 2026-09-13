@@ -13,7 +13,7 @@ def test_bridge_extracts_speakable_progress_and_hides_sensitive_text():
     if node is None:
         pytest.skip("Node.js is unavailable")
     script = f"""
-import {{ buildProgressSnapshot }} from {json.dumps(BRIDGE_PATH.as_uri())};
+import {{ buildProgressSnapshot, buildTaskMemoryMessage }} from {json.dumps(BRIDGE_PATH.as_uri())};
 const progress = buildProgressSnapshot({{
   thread: {{ status: {{ type: "active", activeFlags: [] }} }},
   latestTurn: {{ id: "turn-1", status: "inProgress" }},
@@ -31,7 +31,14 @@ const completedOnly = buildProgressSnapshot({{
     text: "已经完成配置修改。下一步运行完整测试。"
   }}
 }});
-process.stdout.write(JSON.stringify({{ progress, completedOnly }}));
+const memory = buildTaskMemoryMessage({{
+  latestAssistantMessage: {{
+    id: "message-4",
+    phase: "final_answer",
+    text: "已完成修改，token=abcdefghijklmnopqrstuvwxyz0123456789，文件在 /Users/demo/private/result.md。"
+  }}
+}});
+process.stdout.write(JSON.stringify({{ progress, completedOnly, memory }}));
 """
     result = subprocess.run(
         [node, "--input-type=module", "-e", script],
@@ -48,6 +55,10 @@ process.stdout.write(JSON.stringify({{ progress, completedOnly }}));
     assert "/Users/" not in result.stdout
     assert "abcdefghijklmnopqrstuvwxyz" not in result.stdout
     assert parsed["completedOnly"]["current_action"] is None
+    assert parsed["memory"]["message_id"] == "message-4"
+    assert parsed["memory"]["phase"] == "final_answer"
+    assert "token已隐藏" in parsed["memory"]["text"]
+    assert "本地文件" in parsed["memory"]["text"]
 
 
 def test_bridge_reads_live_commentary_from_local_rollout(tmp_path):

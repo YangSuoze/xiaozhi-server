@@ -11,7 +11,9 @@ CODEX_CONTROL_DESC = {
             "控制电脑上的Codex桌面任务。用户明确提到Codex，或者当前对话已经"
             "进入Codex模式、正在等待选择或等待回答时调用。"
             "支持进入Codex模式、选择最近任务、发送或补充指令、回答Codex问题、"
-            "查询状态和具体进展、设置播报、停止监控和退出。进入模式后用户说‘第一个’等"
+            "查询状态和具体进展、回顾任务历史、设置播报、停止监控和退出。"
+            "用户问之前做过什么、还剩什么、遇到过什么问题时使用ask_task；只问当前"
+            "状态或当前步骤时使用status。进入模式后用户说‘第一个’等"
             "序号是在选择任务；选中任务后的普通工作要求使用send_instruction。"
         ),
         "parameters": {
@@ -27,6 +29,7 @@ CODEX_CONTROL_DESC = {
                         "send_instruction",
                         "respond",
                         "status",
+                        "ask_task",
                         "set_announcements",
                         "stop_monitor",
                         "exit",
@@ -36,8 +39,8 @@ CODEX_CONTROL_DESC = {
                 "text": {
                     "type": "string",
                     "description": (
-                        "选择任务时传用户说的序号或名称；发送指令、回答问题时"
-                        "传完整原话。其他动作不需要。"
+                        "选择任务时传用户说的序号或名称；发送指令、回答Codex问题、"
+                        "询问任务历史时传完整原话。其他动作不需要。"
                     ),
                 },
                 "enabled": {
@@ -76,6 +79,13 @@ CODEX_CONTROL_DESC = {
             },
             {"user_query": "Codex现在做到哪一步了", "answer": {"action": "status"}},
             {
+                "user_query": "这个任务之前做了什么，还有什么没解决？",
+                "answer": {
+                    "action": "ask_task",
+                    "text": "之前做了什么，还有什么没解决？",
+                },
+            },
+            {
                 "user_query": "需要，每五分钟告诉我一次",
                 "answer": {
                     "action": "set_announcements",
@@ -113,6 +123,7 @@ def codex_control(
         enabled=enabled,
         interval_minutes=interval_minutes,
         delivery_mode=delivery_mode,
+        llm=getattr(conn, "llm", None),
     )
     session = service.store.get_session(device_id)
     conn.codex_mode_expires_at = (
