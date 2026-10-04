@@ -84,6 +84,9 @@ enable_websocket_ping: false
 #   0: 使用精确时间控制，严格匹配音频帧率（默认，运行时按音频帧率计算）
 #   > 0: 使用固定延迟（毫秒）发送，例如: 60
 tts_audio_send_delay: 0
+# 最后一个音频包发出后，等待音箱播放完缓冲区再发送 stop（毫秒）
+# 新音色或网络抖动下尾音被截断时可适当增加，建议 800-1500
+tts_audio_end_grace_ms: 1000
 
 exit_commands:
   - "退出"

@@ -5,6 +5,7 @@ from core.utils import textUtils
 from core.utils.util import audio_to_data
 from core.providers.tts.dto.dto import SentenceType
 from core.utils.audioRateController import AudioRateController
+from core.utils.tts_timing import get_audio_end_grace_seconds
 
 TAG = __name__
 # 音频帧时长（毫秒）
@@ -61,11 +62,13 @@ async def _wait_for_audio_completion(conn):
         )
         await rate_controller.queue_empty_event.wait()
 
-        # 等待预缓冲包播放完成
-        # 前N个包直接发送，增加2个网络抖动包，需要额外等待它们在客户端播放完成
+        # 等待客户端播放完已经发送的尾部缓冲。队列清空只表示最后一个包已发出，
+        # 此时立即发送 stop 会让部分设备丢弃仍在解码或播放的尾音。
         frame_duration_ms = rate_controller.frame_duration
-        pre_buffer_playback_time = (PRE_BUFFER_COUNT + 2) * frame_duration_ms / 1000.0
-        await asyncio.sleep(pre_buffer_playback_time)
+        grace_seconds = get_audio_end_grace_seconds(
+            conn.config, frame_duration_ms, PRE_BUFFER_COUNT
+        )
+        await asyncio.sleep(grace_seconds)
 
         conn.logger.bind(tag=TAG).debug("音频发送完成")
 
