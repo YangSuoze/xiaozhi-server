@@ -103,9 +103,10 @@ class LLMProvider(LLMProviderBase):
                     request_params[key] = value
 
             template_kwargs = self.extra_body.get("chat_template_kwargs") or {}
-            enable_thinking = (
+            enable_thinking = self.extra_body.get(
+                "enable_thinking",
                 template_kwargs.get("enable_thinking")
-                if isinstance(template_kwargs, dict) else None
+                if isinstance(template_kwargs, dict) else None,
             )
             logger.bind(tag=TAG).info(
                 f"LLM流请求 trace={trace_id} model={self.model_name} "

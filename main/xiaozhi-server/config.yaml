@@ -545,7 +545,10 @@ LLM:
     max_tokens: 500   # 最大生成token数
     top_p: 1
     frequency_penalty: 0  # 频率惩罚
-    # 自定义网关可在 data/.config.yaml 中配置额外请求体；请确认网关支持对应参数。
+    # 支持思考开关的阿里云模型，可在 data/.config.yaml 中关闭思考：
+    # extra_body:
+    #   enable_thinking: false
+    # 自定义网关可能使用下面的嵌套格式；请按网关文档配置，勿与阿里云格式混用。
     # extra_body:
     #   chat_template_kwargs:
     #     enable_thinking: false
