@@ -47,7 +47,7 @@ async def _send_stop(conn):
 
 async def _stream(conn, generation: int):
     if not TRACK.is_file() or TRACK.stat().st_size < FRAME_BYTES:
-        conn.logger.warning(f"创业播客背景音乐文件不存在或无效: {TRACK}")
+        conn.logger.warning(f"播客背景音乐文件不存在或无效: {TRACK}")
         return
 
     try:
@@ -72,7 +72,7 @@ async def _stream(conn, generation: int):
     except asyncio.CancelledError:
         raise
     except Exception as error:
-        conn.logger.warning(f"创业播客背景音乐中断: {error}")
+        conn.logger.warning(f"播客背景音乐中断: {error}")
     finally:
         if getattr(conn, "_podcast_bgm_generation", None) == generation:
             await _send_stop(conn)

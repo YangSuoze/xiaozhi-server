@@ -8,16 +8,20 @@ from pathlib import Path
 from core.paper_podcast.bgm import set_enabled as set_bgm_enabled
 
 
-CONTENT_PATH = Path(__file__).parent / "content" / "founder_startup.md"
+CONTENT_PATHS = {
+    "startup": Path(__file__).parent / "content" / "founder_startup.md",
+    "llm": Path(__file__).parent / "content" / "llm_impact_2026.md",
+}
+TOPIC_LABELS = {"startup": "创业", "llm": "大模型"}
 
 
-@lru_cache(maxsize=1)
-def load_podcast_context() -> str:
-    return CONTENT_PATH.read_text(encoding="utf-8").strip()
+@lru_cache(maxsize=2)
+def load_podcast_context(topic: str = "startup") -> str:
+    return CONTENT_PATHS[topic].read_text(encoding="utf-8").strip()
 
 
 class PaperPodcastService:
-    """Switch a live Xiaozhi connection into an interactive startup discussion."""
+    """Switch a live Xiaozhi connection between interactive podcast topics."""
 
     title = "创业：马斯克、黄仁勋与乔布斯的不同选择"
     openings = {
@@ -42,8 +46,32 @@ class PaperPodcastService:
             "再看另外两人会怎样处理类似的矛盾。你想先听哪一位？"
         ),
     }
+    llm_openings = {
+        "work": (
+            "大模型播客开始。最近的模型发布都在强调能替人完成更长的工作，"
+            "但一项任务在榜单上通过，和你敢把真实项目交给它，是两回事。"
+            "咱们先聊这道缝隙：AI 到底替你省了时间，还是把时间转移到了验收上？"
+        ),
+        "learning": (
+            "大模型播客开始。AI 导师越来越像真人，语音交流也更自然。"
+            "可一项近期课堂实验发现，聊得更频繁，并不自动等于学得更好。"
+            "我们从这里聊：怎样让 AI 帮人思考，而不是代替人思考？"
+        ),
+        "jobs": (
+            "大模型播客开始。很多人问 AI 会不会替代工作，可工作不是一个按钮，"
+            "它由写初稿、判断、复核、沟通等不同任务组成。"
+            "如果最容易练手的任务先交给 AI，新人又该怎么长成专家？"
+        ),
+        "energy": (
+            "大模型播客开始。模型一次回答可能越来越省钱，数据中心的总用电却仍可能增加。"
+            "因为单次成本下降，使用量往往会扩大。"
+            "我们从这件事聊起：衡量 AI 的收益和代价，究竟该按每次调用，还是按整个社会的总账？"
+        ),
+    }
 
-    def build_prompt(self, base_prompt: str, user_preferences: str = "") -> str:
+    def build_prompt(
+        self, base_prompt: str, user_preferences: str = "", topic: str = "startup"
+    ) -> str:
         # 只沿用功能和事实上下文。普通聊天的身份、情绪、句式和长度模板
         # 会强制撒娇、短答或追问，不能与播客风格一起注入。
         preserved = []
@@ -56,6 +84,24 @@ class PaperPodcastService:
                 f"<user_preferences>\n{user_preferences.strip()}\n</user_preferences>"
             )
         shared_context = "\n\n".join(preserved)
+        if topic == "llm":
+            return f"""{shared_context}
+
+<llm_impact_context>
+{load_podcast_context("llm")}
+</llm_impact_context>
+
+<paper_podcast_mode>
+你是一位中文播客讨论伙伴，与用户共同讨论《大模型发展与影响》。资料更新截至 2026 年 10 月 5 日，不具备实时新闻检索时，不要声称知道此后的新发布。你的目标是帮助用户形成有证据、有边界的判断，而不是念模型排行榜或把厂商宣传当结论。
+
+先回应用户这一轮真正提出的问题。优先用一个具体的研究、产品或工作场景说明机制，再谈反例、代价和适用条件。必要时区分模型与代理系统、基准成绩与真实交付、任务自动化与岗位变化、使用量与生产率、参与感与学习效果。提出你自己的判断，但把事实、推断和预测说清楚；用户质疑时认真处理分歧，不要只附和。
+
+资料中的机构、日期、研究设计和限制是讨论依据。厂商自测不能直接横比，单项实验不能代表全部人群，相关性不能说成因果，预测不能说成已发生的事实。不要编造研究数字、论文结论或引语。用户要最新消息而资料不足时明确说需要核验；用户要来源时简短说出机构和日期。
+
+口播自然、有节奏：普通一轮讲透一个关键点，大约半分钟；用户明确要深入时可以讲得更完整。不要按知识包章节逐条念，也不要每说几句就问一个问题。只有用户的回答会改变讨论方向时才主动提问；用户说“继续”时沿当前论点加一层反例、机制或验证方法。用户要换主题就跟随，要求复述就简短准确地复述。
+
+大模型发展、工作、教育、科研、成本和风险等普通讨论直接回答，不重复调用 paper_podcast.start。只有用户明确要切换播客话题时才调用 paper_podcast.start 并指定 topic；明确结束播客时调用 paper_podcast.stop。设备控制和其他真实操作仍须按工具规则执行。
+</paper_podcast_mode>"""
         return f"""{shared_context}
 
 <startup_context>
@@ -108,32 +154,53 @@ class PaperPodcastService:
 上面的 startup_context 是公开资料整理；其中的讨论角度是分析，不是传记原话或已经证明的因果结论。
 </paper_podcast_mode>"""
 
-    def start(self, conn) -> str:
-        if getattr(conn, "paper_podcast_active", False):
-            return "创业播客已经开始了，我们接着刚才的话题聊。"
+    def start(self, conn, topic: str = "startup") -> str:
+        if topic not in TOPIC_LABELS:
+            return "不支持这个播客话题。"
+        active = getattr(conn, "paper_podcast_active", False)
+        current_topic = getattr(conn, "paper_podcast_topic", "startup")
+        if active and current_topic == topic:
+            return f"{TOPIC_LABELS[topic]}播客已经开始了，我们接着刚才的话题聊。"
 
-        original_prompt = getattr(conn, "prompt", "") or ""
+        original_prompt = (
+            getattr(conn, "paper_podcast_original_prompt", "")
+            if active else getattr(conn, "prompt", "")
+        ) or ""
         settings = getattr(conn, "config", {}).get("paper_podcast") or {}
         preferences = settings.get("user_preferences") or ""
-        prompt = self.build_prompt(original_prompt, preferences)
-        conn.paper_podcast_original_prompt = original_prompt
-        conn.paper_podcast_original_close_after_chat = getattr(
-            conn, "close_after_chat", False
-        )
+        prompt = self.build_prompt(original_prompt, preferences, topic)
+        if not active:
+            conn.paper_podcast_original_prompt = original_prompt
+            conn.paper_podcast_original_close_after_chat = getattr(
+                conn, "close_after_chat", False
+            )
         conn.change_system_prompt(prompt)
         conn.paper_podcast_active = True
+        conn.paper_podcast_topic = topic
         conn.close_after_chat = False
-        if settings.get("bgm_enabled", True):
-            set_bgm_enabled(conn, True)
-        return self._opening_for(conn)
+        set_bgm_enabled(conn, settings.get("bgm_enabled", True))
+        opening = self._opening_for(conn, topic)
+        return f"已切换到{TOPIC_LABELS[topic]}话题。{opening}" if active else opening
 
-    def _opening_for(self, conn) -> str:
+    def _opening_for(self, conn, topic: str = "startup") -> str:
         last_user_text = ""
         dialogue = getattr(getattr(conn, "dialogue", None), "dialogue", [])
         for message in reversed(dialogue):
             if getattr(message, "role", None) == "user":
                 last_user_text = getattr(message, "content", "") or ""
                 break
+
+        if topic == "llm":
+            for words, key in (
+                (("学习", "教育", "学生", "导师"), "learning"),
+                (("就业", "岗位", "工作", "程序员"), "jobs"),
+                (("能源", "电力", "能耗", "环境"), "energy"),
+            ):
+                if any(word in last_user_text for word in words):
+                    return self.llm_openings[key]
+            keys = ("work", "learning", "jobs", "energy")
+            session_id = str(getattr(conn, "session_id", "") or "")
+            return self.llm_openings[keys[sum(session_id.encode("utf-8")) % len(keys)]]
 
         if any(word in last_user_text for word in ("三位", "比较", "对比")):
             return self.openings["compare"]
@@ -148,16 +215,18 @@ class PaperPodcastService:
 
     def stop(self, conn) -> str:
         if not getattr(conn, "paper_podcast_active", False):
-            return "当前没有进行创业播客。"
+            return "当前没有进行播客。"
 
+        topic = getattr(conn, "paper_podcast_topic", "startup")
         original_prompt = getattr(conn, "paper_podcast_original_prompt", "") or ""
         conn.change_system_prompt(original_prompt)
         conn.paper_podcast_active = False
+        conn.paper_podcast_topic = None
         set_bgm_enabled(conn, False)
         conn.paper_podcast_original_prompt = None
         conn.close_after_chat = conn.paper_podcast_original_close_after_chat
         conn.paper_podcast_original_close_after_chat = None
-        return "本次创业播客结束了。刚才的讨论仍保留在当前对话里，需要时可以继续。"
+        return f"本次{TOPIC_LABELS.get(topic, '创业')}播客结束了。刚才的讨论仍保留在当前对话里，需要时可以继续。"
 
     @staticmethod
     def response_options(conn) -> dict:
@@ -202,5 +271,7 @@ class PaperPodcastService:
     @staticmethod
     def status(conn) -> str:
         if getattr(conn, "paper_podcast_active", False):
+            if getattr(conn, "paper_podcast_topic", "startup") == "llm":
+                return "正在聊大模型发展与影响，包括能力、工作、学习和社会代价。"
             return "正在聊创业，结合马斯克、黄仁勋和乔布斯的经历讨论。"
-        return "当前没有进行创业播客。"
+        return "当前没有进行播客。"

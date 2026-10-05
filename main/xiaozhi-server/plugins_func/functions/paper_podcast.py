@@ -1,4 +1,4 @@
-"""Voice entry point for the interactive startup podcast."""
+"""Voice entry point for the interactive podcast topics."""
 
 from core.paper_podcast import PaperPodcastService
 from plugins_func.register import Action, ActionResponse, ToolType, register_function
@@ -9,10 +9,12 @@ PAPER_PODCAST_DESC = {
     "function": {
         "name": "paper_podcast",
         "description": (
-            "控制结合马斯克、黄仁勋、乔布斯传记视角的中文创业播客。"
-            "用户说开始创业播客、进入创业模式、聊三位创始人的创业故事时使用start；"
-            "明确说结束创业播客、退出播客或不聊了时使用stop；"
-            "询问当前是否在创业播客时使用status。进入模式后的普通创业讨论不需要重复调用。"
+            "控制中文互动播客。话题 startup 是马斯克、黄仁勋、乔布斯的创业选择；"
+            "话题 llm 是大模型发展对工作、教育、科技和社会的影响。"
+            "用户明确说开始创业播客时用 start、topic=startup；说开始大模型播客、"
+            "进入大模型话题或切换到大模型播客时用 start、topic=llm。"
+            "在播客里继续讨论、要例子或质疑观点都直接聊天，不重复调用 start。"
+            "明确退出播客时用 stop；询问当前播客状态时用 status。"
         ),
         "parameters": {
             "type": "object",
@@ -20,14 +22,21 @@ PAPER_PODCAST_DESC = {
                 "action": {
                     "type": "string",
                     "enum": ["start", "stop", "status"],
-                    "description": "要执行的创业播客动作。",
-                }
+                    "description": "要执行的播客动作。",
+                },
+                "topic": {
+                    "type": "string",
+                    "enum": ["startup", "llm"],
+                    "description": "start 时选择话题；startup=创业，llm=大模型发展与影响。省略时默认为创业。",
+                },
             },
             "required": ["action"],
         },
         "examples": [
-            {"user_query": "开始创业播客", "answer": {"action": "start"}},
-            {"user_query": "聊聊马斯克、黄仁勋和乔布斯的创业故事", "answer": {"action": "start"}},
+            {"user_query": "开始创业播客", "answer": {"action": "start", "topic": "startup"}},
+            {"user_query": "聊聊马斯克、黄仁勋和乔布斯的创业故事", "answer": {"action": "start", "topic": "startup"}},
+            {"user_query": "开始大模型播客", "answer": {"action": "start", "topic": "llm"}},
+            {"user_query": "切换到大模型发展话题", "answer": {"action": "start", "topic": "llm"}},
             {"user_query": "结束创业播客", "answer": {"action": "stop"}},
         ],
     },
@@ -35,14 +44,16 @@ PAPER_PODCAST_DESC = {
 
 
 @register_function("paper_podcast", PAPER_PODCAST_DESC, ToolType.SYSTEM_CTL)
-def paper_podcast(conn, action: str):
+def paper_podcast(conn, action: str, topic: str = "startup"):
     service = PaperPodcastService()
     if action == "start":
-        response = service.start(conn)
+        if topic not in ("startup", "llm"):
+            return ActionResponse(Action.ERROR, response="不支持这个播客话题。")
+        response = service.start(conn, topic)
     elif action == "stop":
         response = service.stop(conn)
     elif action == "status":
         response = service.status(conn)
     else:
-        return ActionResponse(Action.ERROR, response="不支持的创业播客动作。")
+        return ActionResponse(Action.ERROR, response="不支持的播客动作。")
     return ActionResponse(Action.RESPONSE, response=response)

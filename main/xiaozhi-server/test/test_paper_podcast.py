@@ -112,7 +112,7 @@ def test_repeated_start_does_not_replace_restore_snapshot():
     service.stop(conn)
     assert conn.prompt == "你是小智。"
     assert conn.close_after_chat is True
-    assert service.stop(conn) == "当前没有进行创业播客。"
+    assert service.stop(conn) == "当前没有进行播客。"
 
 
 def test_opening_follows_requested_founder_and_context_fits_budget():
@@ -136,6 +136,51 @@ def test_context_keeps_key_facts_and_avoids_biography_fabrication():
     context = load_podcast_context()
     for evidence in ["2004 年", "1993 年", "2007 年", "幸存者偏差", "不应编造为传记原文"]:
         assert evidence in context
+
+
+def test_llm_topic_loads_recent_sources_and_voice_discussion_prompt():
+    conn = StubConnection()
+    conn.dialogue.put(Message(role="user", content="开始大模型播客，先谈学习效果"))
+    service = PaperPodcastService()
+
+    opening = service.start(conn, topic="llm")
+
+    assert conn.paper_podcast_topic == "llm"
+    assert "AI 导师" in opening
+    assert "2026 年 10 月 5 日" in conn.prompt
+    assert "<llm_impact_context>" in conn.prompt
+    assert "<startup_context>" not in conn.prompt
+    assert "METR" in conn.prompt and "IEA" in conn.prompt
+    assert len(conn.prompt) < 30000
+    assert "大模型发展与影响" in service.status(conn)
+    assert "大模型播客结束" in service.stop(conn)
+    assert conn.prompt == "你是小智。"
+
+
+def test_switching_topics_keeps_original_prompt_and_restore_state():
+    conn = StubConnection()
+    service = PaperPodcastService()
+
+    service.start(conn)
+    switched = service.start(conn, topic="llm")
+    assert "已切换到大模型话题" in switched
+    assert "<llm_impact_context>" in conn.prompt
+    assert "<startup_context>" not in conn.prompt
+
+    service.start(conn, topic="startup")
+    assert "<startup_context>" in conn.prompt
+    assert "<llm_impact_context>" not in conn.prompt
+    service.stop(conn)
+    assert conn.prompt == "你是小智。"
+    assert conn.close_after_chat is True
+
+
+def test_llm_context_separates_claims_from_evidence_limits():
+    context = load_podcast_context("llm")
+    for evidence in ["GPT-6.1 Sol", "Claude Sonnet 5.5", "Gemini 4 Argon", "NBER", "预印本"]:
+        assert evidence in context
+    assert "厂商自测不能直接横比" in context
+    assert "预测不是事实" in context
 
 
 def test_user_view_reminder_quotes_users_only_and_does_not_mutate_history():

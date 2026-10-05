@@ -204,6 +204,29 @@ class _BlockingLLM:
 
 
 class IntentProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_explicit_llm_podcast_command_keeps_topic_without_llm_guess(self):
+        provider = intent_module.IntentProvider({})
+        provider.llm = _BlockingLLM(delay=0)
+        conn = _Connection()
+        conn.func_handler = types.SimpleNamespace(
+            get_functions=lambda: [{"function": {"name": "paper_podcast"}}]
+        )
+
+        result = await provider.detect_intent(conn, [], "请开始大模型播客。")
+
+        self.assertEqual(
+            json.loads(result),
+            {"function_call": {"name": "paper_podcast", "arguments": {
+                "action": "start", "topic": "llm"}}},
+        )
+        self.assertEqual(provider.llm.calls, [])
+
+        startup = await provider.detect_intent(conn, [], "切换到创业播客")
+        self.assertEqual(json.loads(startup)["function_call"]["arguments"]["topic"], "startup")
+        question = await provider.detect_intent(conn, [], "为什么要开始大模型播客？")
+        self.assertEqual(json.loads(question)["function_call"]["name"], "continue_chat")
+        self.assertEqual(len(provider.llm.calls), 1)
+
     async def test_single_quoted_tool_intent_is_routed(self):
         provider = intent_module.IntentProvider({})
         provider.llm = _BlockingLLM(delay=0)
@@ -228,11 +251,14 @@ class IntentProviderTests(unittest.IsolatedAsyncioTestCase):
         conn.paper_podcast_active = True
         await provider.detect_intent(conn, [], "嗯，继续")
         await provider.detect_intent(conn, [], "嗯，继续")
+        conn.paper_podcast_topic = "llm"
+        await provider.detect_intent(conn, [], "嗯，继续")
 
-        self.assertEqual(len(provider.llm.calls), 2)
-        self.assertNotIn("当前已经进入创业播客", provider.llm.calls[0][0])
-        self.assertIn("当前已经进入创业播客", provider.llm.calls[1][0])
-        self.assertIn("明确的其他设备或工具操作仍按原规则识别", provider.llm.calls[1][0])
+        self.assertEqual(len(provider.llm.calls), 3)
+        self.assertNotIn("当前正在创业播客", provider.llm.calls[0][0])
+        self.assertIn("当前正在创业播客", provider.llm.calls[1][0])
+        self.assertIn("当前正在大模型发展与影响播客", provider.llm.calls[2][0])
+        self.assertIn("其他设备或工具操作按原规则识别", provider.llm.calls[1][0])
 
     async def test_sync_llm_does_not_block_event_loop(self):
         provider = intent_module.IntentProvider(

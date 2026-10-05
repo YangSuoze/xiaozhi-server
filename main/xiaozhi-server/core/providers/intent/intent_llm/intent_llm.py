@@ -159,6 +159,27 @@ class IntentProvider(IntentProviderBase):
             if mcp_tools:
                 functions.extend(mcp_tools)
 
+        # 明确的语音开场/切换指令直接路由，避免意图模型省略 topic 后误入旧话题。
+        if any(item.get("function", {}).get("name") == "paper_podcast" for item in functions):
+            command = re.sub(r"[\s，。！？!?、]", "", text)
+            match = re.fullmatch(
+                r"(?:请你?|小智|小宝)?(?:开始|进入|切换到)"
+                r"(大模型|人工智能|AI|创业)(?:发展(?:与)?影响)?(?:播客|话题|模式)",
+                command,
+                flags=re.IGNORECASE,
+            )
+            if match:
+                topic = "startup" if match.group(1) == "创业" else "llm"
+                return json.dumps(
+                    {
+                        "function_call": {
+                            "name": "paper_podcast",
+                            "arguments": {"action": "start", "topic": topic},
+                        }
+                    },
+                    ensure_ascii=False,
+                )
+
         functions_json = json.dumps(
             functions, ensure_ascii=False, sort_keys=True, default=str
         )
@@ -177,12 +198,15 @@ class IntentProvider(IntentProviderBase):
             f"{static_prompt}\n"
         )
         podcast_active = getattr(conn, "paper_podcast_active", False)
+        podcast_topic = getattr(conn, "paper_podcast_topic", "startup") if podcast_active else None
         if podcast_active:
             prompt_music += (
-                "\n当前已经进入创业播客。创业问题、人物比较、观点、质疑、举例请求、嗯继续、我不同意"
-                "都属于 continue_chat，不要因提到创业或历史中有开场指令而再次调用 paper_podcast。"
-                "只有用户当前明确要求开始、结束或查询播客状态时才调用对应动作。"
-                "明确的其他设备或工具操作仍按原规则识别。只输出意图 JSON，不直接回答创业问题。\n"
+                f"\n当前正在{('大模型发展与影响' if podcast_topic == 'llm' else '创业')}播客。"
+                "当前话题的观点、比较、质疑、举例请求、嗯继续、我不同意都属于 continue_chat，"
+                "不要因对话历史里的开场指令而重复调用 paper_podcast。"
+                "只有用户这句话明确要切换另一个播客话题时，才调用 paper_podcast.start 并指定 topic；"
+                "明确结束或查询状态时才调用对应动作。其他设备或工具操作按原规则识别。"
+                "只输出意图 JSON，不直接回答讨论问题。\n"
             )
 
         # 构建用户对话历史的提示
@@ -211,6 +235,7 @@ class IntentProvider(IntentProviderBase):
             "history": history_lines,
             "tools": prompt_key,
             "paper_podcast_active": podcast_active,
+            "paper_podcast_topic": podcast_topic,
             "local_minute": now.strftime("%Y-%m-%d %H:%M %z"),
         }
         cache_key = hashlib.sha256(
