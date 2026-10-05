@@ -23,6 +23,9 @@ class LLMProvider(LLMProviderBase):
             self.base_url = config.get("url")
         timeout = config.get("timeout", 300)
         self.timeout = int(timeout) if timeout else 300
+        self.extra_body = config.get("extra_body") or {}
+        if not isinstance(self.extra_body, dict):
+            raise ValueError("LLM extra_body 必须是字典")
 
         param_defaults = {
             "max_tokens": int,
@@ -82,6 +85,8 @@ class LLMProvider(LLMProviderBase):
                 "messages": dialogue,
                 "stream": True,
             }
+            if self.extra_body:
+                request_params["extra_body"] = self.extra_body
 
             # 添加可选参数,只有当参数不为None时才添加
             optional_params = {
@@ -97,9 +102,15 @@ class LLMProvider(LLMProviderBase):
                 if value is not None:
                     request_params[key] = value
 
+            template_kwargs = self.extra_body.get("chat_template_kwargs") or {}
+            enable_thinking = (
+                template_kwargs.get("enable_thinking")
+                if isinstance(template_kwargs, dict) else None
+            )
             logger.bind(tag=TAG).info(
                 f"LLM流请求 trace={trace_id} model={self.model_name} "
-                f"messages={len(dialogue)} max_tokens={request_params.get('max_tokens')}"
+                f"messages={len(dialogue)} max_tokens={request_params.get('max_tokens')} "
+                f"enable_thinking={enable_thinking}"
             )
             responses = self.client.chat.completions.create(**request_params)
 
@@ -164,6 +175,8 @@ class LLMProvider(LLMProviderBase):
                 "stream": True,
                 "tools": functions,
             }
+            if self.extra_body:
+                request_params["extra_body"] = self.extra_body
 
             optional_params = {
                 "max_tokens": kwargs.get("max_tokens", self.max_tokens),

@@ -545,6 +545,10 @@ LLM:
     max_tokens: 500   # 最大生成token数
     top_p: 1
     frequency_penalty: 0  # 频率惩罚
+    # 自定义网关可在 data/.config.yaml 中配置额外请求体；请确认网关支持对应参数。
+    # extra_body:
+    #   chat_template_kwargs:
+    #     enable_thinking: false
   AliAppLLM:
     # 定义LLM API类型
     type: AliBL

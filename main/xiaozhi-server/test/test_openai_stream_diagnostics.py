@@ -43,6 +43,7 @@ class OpenAIStreamDiagnosticsTests(unittest.TestCase):
         provider.temperature = None
         provider.top_p = None
         provider.frequency_penalty = None
+        provider.extra_body = {}
         provider.client = SimpleNamespace(
             chat=SimpleNamespace(
                 completions=SimpleNamespace(create=lambda **_kwargs: iter([chunk]))
