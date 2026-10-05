@@ -100,6 +100,8 @@ async def no_voice_close_connect(conn, have_voice):
     if have_voice:
         conn.last_activity_time = time.time() * 1000
         return
+    if FixedPodcastDemo.is_active(conn):
+        return
     codex_mode_expires_at = getattr(conn, "codex_mode_expires_at", None)
     if codex_mode_expires_at and codex_mode_expires_at > time.time():
         return
