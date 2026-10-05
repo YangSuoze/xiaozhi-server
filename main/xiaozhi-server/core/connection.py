@@ -28,6 +28,7 @@ from core.handle.reportHandle import report
 from core.providers.tts.default import DefaultTTS
 from concurrent.futures import ThreadPoolExecutor
 from core.utils.dialogue import Message, Dialogue
+from core.paper_podcast import PaperPodcastService
 from core.providers.asr.dto.dto import InterfaceType
 from core.handle.textHandle import handleTextMessage
 from core.providers.tools.unified_tool_handler import UnifiedToolHandler
@@ -848,21 +849,26 @@ class ConnectionHandler:
                 )
                 memory_str = future.result()
 
+            response_options = PaperPodcastService.response_options(self)
+            messages = PaperPodcastService.prepare_messages(
+                self,
+                self.dialogue.get_llm_dialogue_with_memory(
+                    memory_str, self.config.get("voiceprint", {})
+                ),
+            )
             if self.intent_type == "function_call" and functions is not None:
                 # 使用支持functions的streaming接口
                 llm_responses = self.llm.response_with_functions(
                     self.session_id,
-                    self.dialogue.get_llm_dialogue_with_memory(
-                        memory_str, self.config.get("voiceprint", {})
-                    ),
+                    messages,
                     functions=functions,
+                    **response_options,
                 )
             else:
                 llm_responses = self.llm.response(
                     self.session_id,
-                    self.dialogue.get_llm_dialogue_with_memory(
-                        memory_str, self.config.get("voiceprint", {})
-                    ),
+                    messages,
+                    **response_options,
                 )
         except Exception as e:
             self.logger.bind(tag=TAG).error(f"LLM 处理出错 {query}: {e}")
@@ -1100,6 +1106,11 @@ class ConnectionHandler:
     async def close(self, ws=None):
         """资源清理方法"""
         try:
+            bgm_task = getattr(self, "_podcast_bgm_task", None)
+            self._podcast_bgm_generation = getattr(self, "_podcast_bgm_generation", 0) + 1
+            if bgm_task is not None:
+                bgm_task.cancel()
+                self._podcast_bgm_task = None
             # 【新增】注销连接
             if self.device_id:
                 removed = connection_manager.unregister(self.device_id, self)
@@ -1226,6 +1237,8 @@ class ConnectionHandler:
         self.client_audio_buffer = bytearray()
         self.client_have_voice = False
         self.client_voice_stop = False
+        self.client_voice_window.clear()
+        self.last_is_voice = False
         self.logger.bind(tag=TAG).debug("VAD states reset.")
 
     def chat_and_close(self, text):

@@ -86,6 +86,8 @@ class AccessToken:
 
 
 class TTSProvider(TTSProviderBase):
+    SESSION_START_TIMEOUT = 10
+
     def __init__(self, config, delete_audio_file):
         super().__init__(config, delete_audio_file)
 
@@ -129,6 +131,8 @@ class TTSProvider(TTSProviderBase):
             self.ws_url = f"wss://{self.host}/ws/v1"
         self.ws = None
         self._monitor_task = None
+        self._session_started = None
+        self._audio_session_ended = True
         self.last_active_time = None
 
         # 专属tts设置
@@ -233,7 +237,6 @@ class TTSProvider(TTSProviderBase):
                             loop=self.conn.loop,
                         )
                         future.result()
-                        self.before_stop_play_files.clear()
                         logger.bind(tag=TAG).debug("TTS会话启动成功")
 
                     except Exception as e:
@@ -326,10 +329,15 @@ class TTSProvider(TTSProviderBase):
                 )
                 await self.close()
 
+            self._audio_session_ended = False
+            self.before_stop_play_files.clear()
+
             # 建立新连接
             await self._ensure_connection()
 
-            # 启动监听任务
+            # 必须收到 SynthesisStarted 才能发送 RunSynthesis / StopSynthesis。
+            # 工具的固定回复会立即入队，不能依赖 LLM 生成文本时的自然延迟。
+            self._session_started = asyncio.get_running_loop().create_future()
             self._monitor_task = asyncio.create_task(self._start_monitor_tts_response())
 
             start_request = {
@@ -353,11 +361,25 @@ class TTSProvider(TTSProviderBase):
             await self.ws.send(json.dumps(start_request))
             self.last_active_time = time.time()
             logger.bind(tag=TAG).debug("会话启动请求已发送")
+            await asyncio.wait_for(
+                self._session_started, timeout=self.SESSION_START_TIMEOUT
+            )
         except Exception as e:
             logger.bind(tag=TAG).error(f"启动会话失败: {str(e)}")
             # 确保清理资源
             await self.close()
+            self._end_audio_session(failed=True)
             raise
+
+    def _end_audio_session(self, failed=False):
+        """成功和失败均结束设备播报；一次会话只发送一次 LAST。"""
+        if self._audio_session_ended:
+            return
+        self._audio_session_ended = True
+        if failed or self.conn.client_abort or self.conn.stop_event.is_set():
+            self.before_stop_play_files.clear()
+        if not self.conn.client_abort and not self.conn.stop_event.is_set():
+            self._process_before_stop_play_files()
 
     async def finish_session(self, task_id):
         logger.bind(tag=TAG).debug(f"关闭会话～～{task_id}")
@@ -392,6 +414,8 @@ class TTSProvider(TTSProviderBase):
 
     async def close(self):
         """资源清理"""
+        if self._session_started is not None and not self._session_started.done():
+            self._session_started.cancel()
         if self._monitor_task:
             try:
                 self._monitor_task.cancel()
@@ -412,8 +436,9 @@ class TTSProvider(TTSProviderBase):
 
     async def _start_monitor_tts_response(self):
         """监听TTS响应"""
+        session_finished = False
+        session_error = RuntimeError("语音合成连接在会话完成前关闭")
         try:
-            session_finished = False  # 标记会话是否正常结束
             while not self.conn.stop_event.is_set():
                 try:
                     msg = await self.ws.recv()
@@ -429,9 +454,18 @@ class TTSProvider(TTSProviderBase):
                             event_name = header.get("name")
                             if event_name == "SynthesisStarted":
                                 logger.bind(tag=TAG).debug("TTS合成已启动")
+                                if not self._session_started.done():
+                                    self._session_started.set_result(None)
                                 self.tts_audio_queue.put(
                                     (SentenceType.FIRST, [], None)
                                 )
+                            elif event_name == "TaskFailed":
+                                session_error = RuntimeError(
+                                    f"阿里云语音合成失败: {header.get('status')} - "
+                                    f"{header.get('status_text', '未知错误')}"
+                                )
+                                logger.bind(tag=TAG).error(str(session_error))
+                                break
                             elif event_name == "SentenceEnd":
                                 # 发送缓存的数据
                                 if self.conn.tts_MessageText:
@@ -444,7 +478,6 @@ class TTSProvider(TTSProviderBase):
                                     self.conn.tts_MessageText = None
                             elif event_name == "SynthesisCompleted":
                                 logger.bind(tag=TAG).debug(f"会话结束～～")
-                                self._process_before_stop_play_files()
                                 session_finished = True
                                 break
                         except json.JSONDecodeError:
@@ -467,8 +500,10 @@ class TTSProvider(TTSProviderBase):
                 except:
                     pass
                 self.ws = None
-        # 监听任务退出时清理引用
         finally:
+            self._end_audio_session(failed=not session_finished)
+            if self._session_started is not None and not self._session_started.done():
+                self._session_started.set_exception(session_error)
             self._monitor_task = None
 
     def to_tts(self, text: str) -> list:

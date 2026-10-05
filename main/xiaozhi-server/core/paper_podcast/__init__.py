@@ -1,4 +1,4 @@
-"""Interactive paper podcast support."""
+"""Interactive startup podcast support."""
 
 from .service import PaperPodcastService
 

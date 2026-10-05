@@ -1,5 +1,6 @@
 import time
 import asyncio
+import queue
 from typing import Dict, Any
 
 from core.handle.receiveAudioHandle import startToChat
@@ -26,8 +27,14 @@ class ListenTextMessageHandler(TextMessageHandler):
                 f"客户端拾音模式：{conn.client_listen_mode}"
             )
         if msg_json["state"] == "start":
-            conn.client_have_voice = True
-            conn.client_voice_stop = False
+            conn.reset_vad_states()
+            conn.asr_audio.clear()
+            # 识别上一轮时积压的音频不能混入新一轮聆听。
+            while True:
+                try:
+                    conn.asr_audio_queue.get_nowait()
+                except queue.Empty:
+                    break
         elif msg_json["state"] == "stop":
             conn.client_have_voice = True
             conn.client_voice_stop = True
@@ -44,7 +51,7 @@ class ListenTextMessageHandler(TextMessageHandler):
                     if len(asr_audio_task) > 0:
                         await conn.asr.handle_voice_stop(conn, asr_audio_task)
         elif msg_json["state"] == "detect":
-            conn.client_have_voice = False
+            conn.reset_vad_states()
             conn.asr_audio.clear()
             if "text" in msg_json:
                 conn.last_activity_time = time.time() * 1000

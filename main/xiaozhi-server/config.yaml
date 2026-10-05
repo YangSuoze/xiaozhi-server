@@ -233,6 +233,11 @@ prompt: |
 # 默认系统提示词模板文件
 prompt_template: agent-base-prompt.txt
 
+# 创业播客单独保留的称呼、语言或详略偏好；不继承普通聊天的人设和口头禅。
+# 也会保留当前会话中用户已表达的偏好、事实上下文及工具规则。
+paper_podcast:
+  user_preferences: ""
+
 # 结束语prompt
 end_prompt:
   enable: true # 是否开启结束语
@@ -524,7 +529,7 @@ VAD:
     threshold: 0.5
     threshold_low: 0.3
     model_dir: models/snakers4_silero-vad
-    min_silence_duration_ms: 200  # 如果说话停顿比较长，可以把这个值设置大一些
+    min_silence_duration_ms: 1500  # 容许自然停顿，避免一句话被拆成多轮
 
 LLM:
   # 所有openai类型均可以修改超参，以AliLLM为例

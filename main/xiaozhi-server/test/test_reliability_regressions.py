@@ -204,6 +204,36 @@ class _BlockingLLM:
 
 
 class IntentProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_single_quoted_tool_intent_is_routed(self):
+        provider = intent_module.IntentProvider({})
+        provider.llm = _BlockingLLM(delay=0)
+        provider.llm.response_no_stream = lambda **_kwargs: (
+            "{'function_call': {'name': 'paper_podcast', "
+            "'arguments': {'action': 'start'}}}"
+        )
+
+        result = await provider.detect_intent(_Connection(), [], "开始创业播客")
+
+        self.assertEqual(
+            json.loads(result),
+            {"function_call": {"name": "paper_podcast", "arguments": {"action": "start"}}},
+        )
+
+    async def test_podcast_mode_changes_routing_context_and_cache_key(self):
+        provider = intent_module.IntentProvider({})
+        provider.llm = _BlockingLLM(delay=0)
+        provider.cache_manager = _Cache()
+        conn = _Connection()
+        await provider.detect_intent(conn, [], "嗯，继续")
+        conn.paper_podcast_active = True
+        await provider.detect_intent(conn, [], "嗯，继续")
+        await provider.detect_intent(conn, [], "嗯，继续")
+
+        self.assertEqual(len(provider.llm.calls), 2)
+        self.assertNotIn("当前已经进入创业播客", provider.llm.calls[0][0])
+        self.assertIn("当前已经进入创业播客", provider.llm.calls[1][0])
+        self.assertIn("明确的其他设备或工具操作仍按原规则识别", provider.llm.calls[1][0])
+
     async def test_sync_llm_does_not_block_event_loop(self):
         provider = intent_module.IntentProvider(
             {"timeout_seconds": 1, "max_concurrent_requests": 1}

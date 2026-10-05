@@ -1,6 +1,7 @@
 from typing import List, Dict
 from ..base import IntentProviderBase
 from config.logger import setup_logging
+import ast
 import asyncio
 import re
 import json
@@ -175,6 +176,14 @@ class IntentProvider(IntentProviderBase):
             f"当前时区：{now.tzname() or now.strftime('%z')}\n"
             f"{static_prompt}\n"
         )
+        podcast_active = getattr(conn, "paper_podcast_active", False)
+        if podcast_active:
+            prompt_music += (
+                "\n当前已经进入创业播客。创业问题、人物比较、观点、质疑、举例请求、嗯继续、我不同意"
+                "都属于 continue_chat，不要因提到创业或历史中有开场指令而再次调用 paper_podcast。"
+                "只有用户当前明确要求开始、结束或查询播客状态时才调用对应动作。"
+                "明确的其他设备或工具操作仍按原规则识别。只输出意图 JSON，不直接回答创业问题。\n"
+            )
 
         # 构建用户对话历史的提示
         history_lines = []
@@ -201,6 +210,7 @@ class IntentProvider(IntentProviderBase):
             "text": text,
             "history": history_lines,
             "tools": prompt_key,
+            "paper_podcast_active": podcast_active,
             "local_minute": now.strftime("%Y-%m-%d %H:%M %z"),
         }
         cache_key = hashlib.sha256(
@@ -262,7 +272,14 @@ class IntentProvider(IntentProviderBase):
 
         # 尝试解析为JSON
         try:
-            intent_data = json.loads(intent)
+            try:
+                intent_data = json.loads(intent)
+            except json.JSONDecodeError:
+                # 有些模型会返回单引号的 Python 字典；安全地规范化后再交给工具路由。
+                intent_data = ast.literal_eval(intent)
+                if not isinstance(intent_data, dict):
+                    raise ValueError("意图不是对象")
+                intent = json.dumps(intent_data, ensure_ascii=False)
             logger.bind(tag=TAG).debug(f"解析后的意图JSON: {intent_data}")
             # 如果包含function_call，则格式化为适合处理的格式
             if "function_call" in intent_data:
@@ -301,7 +318,7 @@ class IntentProvider(IntentProviderBase):
             postprocess_time = time.time() - postprocess_start_time
             logger.bind(tag=TAG).debug(f"意图后处理耗时: {postprocess_time:.4f}秒")
             return intent
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, SyntaxError, ValueError, TypeError):
             # 后处理时间
             postprocess_time = time.time() - postprocess_start_time
             logger.bind(tag=TAG).error(
