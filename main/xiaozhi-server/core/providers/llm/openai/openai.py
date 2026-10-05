@@ -1,3 +1,5 @@
+import time
+
 import httpx
 import openai
 from openai.types import CompletionUsage
@@ -10,6 +12,8 @@ logger = setup_logging()
 
 
 class LLMProvider(LLMProviderBase):
+    supports_trace_id = True
+
     def __init__(self, config):
         self.model_name = config.get("model_name")
         self.api_key = config.get("api_key")
@@ -60,6 +64,16 @@ class LLMProvider(LLMProviderBase):
         return dialogue
 
     def response(self, session_id, dialogue, **kwargs):
+        trace_id = kwargs.get("trace_id", "-")
+        started_at = time.monotonic()
+        chunks = 0
+        raw_chars = 0
+        visible_chars = 0
+        reasoning_chars = 0
+        finish_reason = None
+        response_id = None
+        error_type = None
+        completed = False
         try:
             dialogue = self.normalize_dialogue(dialogue)
 
@@ -83,19 +97,28 @@ class LLMProvider(LLMProviderBase):
                 if value is not None:
                     request_params[key] = value
 
+            logger.bind(tag=TAG).info(
+                f"LLM流请求 trace={trace_id} model={self.model_name} "
+                f"messages={len(dialogue)} max_tokens={request_params.get('max_tokens')}"
+            )
             responses = self.client.chat.completions.create(**request_params)
 
             is_active = True
             for chunk in responses:
-                try:
-                    delta = (
-                        chunk.choices[0].delta
-                        if getattr(chunk, "choices", None)
-                        else None
-                    )
-                    content = getattr(delta, "content", "") if delta else ""
-                except IndexError:
+                chunks += 1
+                response_id = response_id or getattr(chunk, "id", None)
+                choices = getattr(chunk, "choices", None) or []
+                choice = choices[0] if choices else None
+                if choice and getattr(choice, "finish_reason", None):
+                    finish_reason = choice.finish_reason
+                delta = getattr(choice, "delta", None) if choice else None
+                reasoning = getattr(delta, "reasoning_content", None)
+                if isinstance(reasoning, str):
+                    reasoning_chars += len(reasoning)
+                content = getattr(delta, "content", None) or ""
+                if not isinstance(content, str):
                     content = ""
+                raw_chars += len(content)
                 if content:
                     if "<think>" in content:
                         is_active = False
@@ -104,10 +127,31 @@ class LLMProvider(LLMProviderBase):
                         is_active = True
                         content = content.split("</think>")[-1]
                     if is_active:
+                        visible_chars += len(content)
                         yield content
+            completed = True
 
         except Exception as e:
-            logger.bind(tag=TAG).error(f"Error in response generation: {e}")
+            error_type = type(e).__name__
+            logger.bind(tag=TAG).error(
+                f"LLM流异常 trace={trace_id} type={error_type} "
+                f"status={getattr(e, 'status_code', '-')} "
+                f"code={getattr(e, 'code', '-')} "
+                f"request_id={getattr(e, 'request_id', '-')}"
+            )
+        finally:
+            summary = (
+                f"LLM流结束 trace={trace_id} model={self.model_name} "
+                f"response_id={response_id or '-'} finish_reason={finish_reason or '-'} "
+                f"chunks={chunks} raw_chars={raw_chars} visible_chars={visible_chars} "
+                f"reasoning_chars={reasoning_chars} filtered_chars={raw_chars - visible_chars} "
+                f"completed={completed} error={error_type or '-'} "
+                f"elapsed_ms={int((time.monotonic() - started_at) * 1000)}"
+            )
+            if completed and visible_chars == 0:
+                logger.bind(tag=TAG).warning(summary)
+            else:
+                logger.bind(tag=TAG).info(summary)
 
     def response_with_functions(self, session_id, dialogue, functions=None, **kwargs):
         try:

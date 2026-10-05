@@ -811,6 +811,7 @@ class ConnectionHandler:
                     content_type=ContentType.ACTION,
                 )
             )
+        trace_id = f"{str(self.sentence_id)[:8]}-{depth}"
 
         # 设置最大递归深度，避免无限循环，可根据实际需求调整
         MAX_DEPTH = 5
@@ -850,11 +851,18 @@ class ConnectionHandler:
                 memory_str = future.result()
 
             response_options = PaperPodcastService.response_options(self)
+            if getattr(self.llm, "supports_trace_id", False) is True:
+                response_options["trace_id"] = trace_id
             messages = PaperPodcastService.prepare_messages(
                 self,
                 self.dialogue.get_llm_dialogue_with_memory(
                     memory_str, self.config.get("voiceprint", {})
                 ),
+            )
+            self.logger.bind(tag=TAG).info(
+                f"LLM对话开始 trace={trace_id} depth={depth} "
+                f"mode={self.intent_type} "
+                f"podcast={getattr(self, 'paper_podcast_active', False)}"
             )
             if self.intent_type == "function_call" and functions is not None:
                 # 使用支持functions的streaming接口
@@ -871,7 +879,9 @@ class ConnectionHandler:
                     **response_options,
                 )
         except Exception as e:
-            self.logger.bind(tag=TAG).error(f"LLM 处理出错 {query}: {e}")
+            self.logger.bind(tag=TAG).error(
+                f"LLM准备失败 trace={trace_id} type={type(e).__name__}: {e}"
+            )
             return None
 
         # 处理流式响应
@@ -989,6 +999,15 @@ class ConnectionHandler:
                     self._handle_function_result(tool_results, depth=depth)
 
         # 存储对话内容
+        if (
+            depth == 0
+            and not any(part.strip() for part in response_message)
+            and not tool_call_flag
+        ):
+            self.logger.bind(tag=TAG).warning(
+                f"LLM本轮无可播报文本 trace={trace_id} "
+                f"client_abort={self.client_abort} query_chars={len(query or '')}"
+            )
         if len(response_message) > 0:
             text_buff = "".join(response_message)
             self.tts_MessageText = text_buff
