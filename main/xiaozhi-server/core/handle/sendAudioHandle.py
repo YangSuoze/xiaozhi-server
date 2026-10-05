@@ -6,6 +6,7 @@ from core.utils.util import audio_to_data
 from core.providers.tts.dto.dto import SentenceType
 from core.utils.audioRateController import AudioRateController
 from core.utils.tts_timing import get_audio_end_grace_seconds
+from core.paper_podcast.fixed_demo import FixedPodcastDemo
 
 TAG = __name__
 # 音频帧时长（毫秒）
@@ -44,6 +45,7 @@ async def sendAudioMessage(conn, sentenceType, audios, text):
     if sentenceType == SentenceType.LAST:
         await send_tts_message(conn, "stop", None)
         conn.client_is_speaking = False
+        FixedPodcastDemo.audio_complete(conn)
         if conn.close_after_chat:
             await conn.close()
 

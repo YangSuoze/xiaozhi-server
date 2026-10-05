@@ -8,6 +8,11 @@ from plugins_func.register import Action, ActionResponse
 from core.handle.sendAudioHandle import send_stt_message
 from core.utils.util import remove_punctuation_and_length
 from core.providers.tts.dto.dto import TTSMessageDTO, SentenceType
+from core.paper_podcast.fixed_demo import (
+    FixedPodcastDemo,
+    START_COMMANDS,
+    STOP_COMMANDS,
+)
 
 TAG = __name__
 
@@ -32,6 +37,9 @@ async def handle_user_intent(conn, text):
     if await checkWakeupWords(conn, filtered_text):
         return True
 
+    if await handle_fixed_podcast_demo(conn, text, filtered_text):
+        return True
+
     if conn.intent_type == "function_call":
         # 使用支持function calling的聊天方法,不再进行意图分析
         return False
@@ -43,6 +51,35 @@ async def handle_user_intent(conn, text):
     conn.sentence_id = str(uuid.uuid4().hex)
     # 处理各种意图
     return await process_intent_result(conn, intent_result, text)
+
+
+async def handle_fixed_podcast_demo(conn, text, filtered_text):
+    """Route the rehearsal script before intent detection or ordinary chat."""
+    if filtered_text in START_COMMANDS:
+        reply = FixedPodcastDemo.start(conn)
+        event = "start"
+    elif FixedPodcastDemo.is_active(conn):
+        if filtered_text in STOP_COMMANDS:
+            FixedPodcastDemo.stop(conn)
+            reply = "已退出播客模式。"
+            event = "stop"
+        elif not filtered_text or FixedPodcastDemo.is_speaking(conn):
+            return True
+        else:
+            reply = FixedPodcastDemo.advance(conn)
+            event = "advance"
+    else:
+        return False
+
+    if reply is None:
+        return True
+    await send_stt_message(conn, text)
+    conn.client_abort = False
+    conn.sentence_id = str(uuid.uuid4().hex)
+    conn.dialogue.put(Message(role="user", content=text))
+    conn.logger.bind(tag=TAG).info(f"固定播客脚本 event={event}")
+    conn.executor.submit(speak_txt, conn, reply)
+    return True
 
 
 async def check_direct_exit(conn, text):

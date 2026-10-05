@@ -1,4 +1,5 @@
 import json
+from core.paper_podcast.fixed_demo import FixedPodcastDemo
 
 TAG = __name__
 
@@ -13,4 +14,5 @@ async def handleAbortMessage(conn):
         json.dumps({"type": "tts", "state": "stop", "session_id": conn.session_id})
     )
     conn.clearSpeakStatus()
+    FixedPodcastDemo.audio_interrupted(conn)
     conn.logger.bind(tag=TAG).info("Abort message received-end")

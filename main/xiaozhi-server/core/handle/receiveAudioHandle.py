@@ -6,11 +6,15 @@ from core.handle.abortHandle import handleAbortMessage
 from core.handle.intentHandler import handle_user_intent
 from core.utils.output_counter import check_device_output_limit
 from core.handle.sendAudioHandle import send_stt_message, SentenceType
+from core.paper_podcast.fixed_demo import FixedPodcastDemo
 
 TAG = __name__
 
 
 async def handleAudioMessage(conn, audio):
+    # 演示稿播放时不采集扬声器声音，也不跳到下一段台词。
+    if FixedPodcastDemo.is_speaking(conn):
+        return
     # 当前片段是否有人说话
     have_voice = conn.vad.is_vad(conn, audio)
     # 如果设备刚刚被唤醒，短暂忽略VAD检测
@@ -38,6 +42,8 @@ async def resume_vad_detection(conn):
 
 
 async def startToChat(conn, text):
+    if FixedPodcastDemo.is_speaking(conn):
+        return
     # 检查输入是否是JSON格式（包含说话人信息）
     speaker_name = None
     actual_text = text
